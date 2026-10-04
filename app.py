@@ -13,27 +13,19 @@ st.set_page_config(
 )
 
 # --- 1. Exchange & API Initialization ---
-exchange = ccxt.bybit({
-    'headers': {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'en-US,en;q=0.9',
-    }
+exchange = ccxt.bitget({
+    'enableRateLimit': True,
 })
-
-# Test market fetching
-#markets = exchange.load_markets()
-#print(f"Successfully loaded {len(markets)} markets.")
 
 # --- 2. Data Fetching Utilities ---
 @st.cache_data(ttl=3600)
 def fetch_all_usdt_markets():
-    """Fetch all active Bybit USDT Spot and Perpetual markets."""
+    """Fetch all active Bitget USDT Spot and Perpetual markets."""
     try:
         markets = exchange.load_markets()
         market_list = []
         for symbol, market in markets.items():
-            if market.get('active') and market.get('quote') == 'USDT':
+            if market.get('active', True) and market.get('quote') == 'USDT':
                 m_type = 'Spot' if market.get('spot') else ('Perp' if market.get('swap') else None)
                 if m_type:
                     market_list.append({
@@ -44,7 +36,7 @@ def fetch_all_usdt_markets():
                     })
         return market_list
     except Exception as e:
-        st.error(f"Error loading Bybit markets: {e}")
+        st.error(f"Error loading Bitget markets: {e}")
         return []
 
 @st.cache_data(ttl=300)
@@ -68,7 +60,7 @@ def fetch_derivatives_data(symbol):
         funding_info = exchange.fetch_funding_rate(symbol)
         funding_rate = funding_info.get('fundingRate', 0.0) * 100
         oi_info = exchange.fetch_open_interest(symbol)
-        open_interest = oi_info.get('openInterestAmount', 0.0)
+        open_interest = oi_info.get('openInterestAmount') or oi_info.get('openInterestValue') or oi_info.get('openInterest') or 0.0
         return {
             "funding_rate_pct": funding_rate,
             "open_interest": open_interest,
@@ -247,7 +239,7 @@ def evaluate_confluence(df, fibs, derivatives, fng):
 
 # --- 5. Streamlit User Interface ---
 st.title("⚡ SH1N Crypto Swing Analysis Engine")
-st.caption("Integrated Price Action, Volume, Technicals, Bybit Derivatives, and Macro Sentiment")
+st.caption("Integrated Price Action, Volume, Technicals, Bitget Derivatives, and Macro Sentiment")
 
 # Sidebar Controls
 all_markets = fetch_all_usdt_markets()
@@ -340,7 +332,7 @@ if matching_markets:
             st.subheader("Derivatives & Macro Metrics")
             d1, d2 = st.columns(2)
             with d1:
-                st.markdown("##### Bybit Perpetual Data")
+                st.markdown("##### Bitget Perpetual Data")
                 st.write(f"**Market Type:** {selected_market['type']}")
                 st.write(f"**Funding Rate:** `{derivatives['funding_rate_pct']:.4f}%`")
                 st.write(f"**Open Interest:** `{derivatives['open_interest']:,.2f}`")
