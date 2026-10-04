@@ -9,8 +9,72 @@ import time
 st.set_page_config(
     page_title="SH1N",
     page_icon="⚡",
-    layout="wide"
+    layout="centered"  # Centered layout enforces portrait proportions on desktop
 )
+
+# --- Responsive CSS & Typography Styling ---
+st.markdown("""
+    <style>
+    /* 1. Constrain container width for optimal portrait readability */
+    .main .block-container {
+        max-width: 680px !important;
+        padding-top: 1.5rem !important;
+        padding-bottom: 3rem !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }
+
+    /* 2. Fluid Headers (Prevents oversized text on mobile) */
+    h1 { font-size: clamp(1.4rem, 5vw, 2.1rem) !important; font-weight: 700 !important; }
+    h2 { font-size: clamp(1.2rem, 4vw, 1.6rem) !important; font-weight: 600 !important; }
+    h3 { font-size: clamp(1.05rem, 3.2vw, 1.3rem) !important; font-weight: 600 !important; }
+
+    /* 3. Auto-scaling Metrics for readable numbers on all screens */
+    [data-testid="stMetricValue"] {
+        font-size: clamp(0.95rem, 3.5vw, 1.3rem) !important;
+        font-weight: 700 !important;
+        overflow-wrap: break-word !important;
+    }
+    [data-testid="stMetricLabel"] {
+        font-size: clamp(0.72rem, 2.5vw, 0.85rem) !important;
+        font-weight: 600 !important;
+        color: #64748b !important;
+    }
+    [data-testid="stMetricDelta"] {
+        font-size: clamp(0.7rem, 2.2vw, 0.82rem) !important;
+    }
+
+    /* 4. Responsive 2x2 Grid on Mobile for 4-Column Layouts */
+    @media (max-width: 640px) {
+        [data-testid="stHorizontalBlock"] {
+            flex-wrap: wrap !important;
+        }
+        [data-testid="stColumn"] {
+            width: 48% !important;
+            min-width: 48% !important;
+            flex: 1 1 48% !important;
+            margin-bottom: 0.5rem !important;
+        }
+    }
+
+    /* 5. Safe Text Wrapping */
+    p, li, div, span {
+        overflow-wrap: break-word !important;
+        word-break: break-word !important;
+    }
+
+    /* 6. Mobile-friendly Tab Scroll */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 4px;
+        overflow-x: auto;
+    }
+    .stTabs [data-baseweb="tab"] {
+        font-size: clamp(0.75rem, 2.5vw, 0.88rem) !important;
+        padding: 6px 10px !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 
 # --- 1. Exchange & API Initialization ---
 exchange = ccxt.bitget({
@@ -250,11 +314,11 @@ def generate_plain_english_trade_plan(df, fibs, score):
         action = "BUY / LONG 🟢"
         
         if score >= 65:
-            probability = "High Win Probability (~75% - 82%)"
+            probability = "High (~75%-82%)"
         elif score >= 45:
-            probability = "Moderate-High Win Probability (~65% - 74%)"
+            probability = "Mod-High (~65%-74%)"
         else:
-            probability = "Moderate Win Probability (~55% - 64%)"
+            probability = "Moderate (~55%-64%)"
 
         support_levels = [v for k, v in fibs.items() if v <= price]
         key_support = max(support_levels) if support_levels else price - (atr * 1.5)
@@ -282,11 +346,11 @@ def generate_plain_english_trade_plan(df, fibs, score):
         action = "SELL / SHORT 🔴"
         
         if score <= -65:
-            probability = "High Win Probability (~75% - 82%)"
+            probability = "High (~75%-82%)"
         elif score <= -45:
-            probability = "Moderate-High Win Probability (~65% - 74%)"
+            probability = "Mod-High (~65%-74%)"
         else:
-            probability = "Moderate Win Probability (~55% - 64%)"
+            probability = "Moderate (~55%-64%)"
 
         resistance_levels = [v for k, v in fibs.items() if v >= price]
         key_resistance = min(resistance_levels) if resistance_levels else price + (atr * 1.5)
@@ -311,8 +375,8 @@ def generate_plain_english_trade_plan(df, fibs, score):
 
     # Case 3: NEUTRAL / RANGEBOUND (Score between -25 and +25)
     else:
-        action = "STAND BY / DO NOT TRADE ⏸️"
-        probability = "Low Trade Edge (~50% - Coin Flip)"
+        action = "STAND BY ⏸️"
+        probability = "Low Edge (~50%)"
         entry_min, entry_max = price, price
         sl, tp1, tp2 = price, price, price
 
@@ -377,13 +441,13 @@ if matching_markets:
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Current Price", f"${latest_price:,.4f}", f"{price_change_pct:+.2f}%")
         col2.metric("Market Action", trade_plan['action'])
-        col3.metric("Estimated Win Rate", trade_plan['probability'])
+        col3.metric("Est. Win Rate", trade_plan['probability'])
         col4.metric("Confluence Score", f"{score} / 100")
 
         st.divider()
 
         # --- PROMINENT ACTION CARD FOR NON-TECHNICAL USERS ---
-        st.subheader("🎯 Simple Execution Summary (Where to Trade & Exit)")
+        st.subheader("🎯 Simple Execution Summary")
         
         # Display Banner Alert based on signal
         if "BUY" in trade_plan['action']:
@@ -396,20 +460,20 @@ if matching_markets:
         # Bordered Execution Box
         with st.container():
             p_col1, p_col2, p_col3, p_col4 = st.columns(4)
-            p_col1.metric("1. Optimal Entry Zone", trade_plan['entry_range'])
-            p_col2.metric("2. Take Profit 1 (Scale Out 50%)", f"${trade_plan['tp1']:,.4f}", f"+{trade_plan['tp1_pct']:.2f}% (1.5 R:R)")
-            p_col3.metric("3. Take Profit 2 (Final Target)", f"${trade_plan['tp2']:,.4f}", f"+{trade_plan['tp2_pct']:.2f}% (2.5 R:R)")
-            p_col4.metric("4. Hard Stop Loss", f"${trade_plan['sl']:,.4f}", f"-{trade_plan['risk_pct']:.2f}% Risk")
+            p_col1.metric("1. Entry Zone", trade_plan['entry_range'])
+            p_col2.metric("2. Take Profit 1", f"${trade_plan['tp1']:,.4f}", f"+{trade_plan['tp1_pct']:.2f}%")
+            p_col3.metric("3. Take Profit 2", f"${trade_plan['tp2']:,.4f}", f"+{trade_plan['tp2_pct']:.2f}%")
+            p_col4.metric("4. Hard Stop Loss", f"${trade_plan['sl']:,.4f}", f"-{trade_plan['risk_pct']:.2f}%")
 
         st.divider()
 
         # --- DETAILED TABBED VIEWS ---
         tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "🎯 Trade Strategy (Non-Technical)", 
-            "📊 Confluence Breakdown", 
-            "📈 Technicals & Fibonacci", 
-            "⚡ Derivatives & Sentiment", 
-            "📋 Raw Data"
+            "🎯 Strategy", 
+            "📊 Confluence", 
+            "📈 Technicals", 
+            "⚡ Derivatives", 
+            "📋 Data"
         ])
 
         with tab1:
@@ -418,8 +482,8 @@ if matching_markets:
                 st.markdown(f"- {item}")
                 
             st.info(
-                "🛡️️ **Execution Rule (Wick Protection):** "
-                f"Do not panic exit on a brief intraday price spike. "
+                "🛡 **Execution Rule (Wick Protection):** "
+                "Do not panic exit on a brief intraday price spike. "
                 f"Only trigger your Stop Loss if a **{timeframe.upper()} candle closes beyond ${trade_plan['sl']:,.4f}**."
             )
 
@@ -428,26 +492,26 @@ if matching_markets:
             st.progress(max(0, min(100, int((score + 100) / 2))))
             
             for category, data in score_breakdown.items():
-                c1, c2, c3 = st.columns([2, 1, 4])
+                c1, c2, c3 = st.columns([2, 1, 3])
                 c1.write(f"**{category}**")
-                c2.write(f"`{data['score']} / {data['max']} pts`")
+                c2.write(f"`{data['score']}/{data['max']} pts`")
                 c3.caption(data['detail'])
 
         with tab3:
             col_a, col_b = st.columns(2)
             
             with col_a:
-                st.subheader("Auto-Fibonacci Retracement Levels")
+                st.subheader("Fibonacci Retracements")
                 fib_df = pd.DataFrame(list(fibs.items()), columns=['Fib Level', 'Price Level'])
-                fib_df['Distance to Price'] = fib_df['Price Level'].apply(lambda x: f"{((latest_price - x)/x)*100:+.2f}%")
+                fib_df['Distance'] = fib_df['Price Level'].apply(lambda x: f"{((latest_price - x)/x)*100:+.2f}%")
                 fib_df['Price Level'] = fib_df['Price Level'].apply(lambda x: f"${x:,.4f}")
                 st.table(fib_df)
 
             with col_b:
-                st.subheader("Technical Indicator Values")
+                st.subheader("Key Indicators")
                 latest = df.iloc[-1]
                 tech_data = {
-                    "Metric": ["EMA 20", "EMA 50", "EMA 200", "RSI (14)", "MACD Histogram", "20-Period Vol SMA"],
+                    "Metric": ["EMA 20", "EMA 50", "EMA 200", "RSI (14)", "MACD Hist", "20-SMA Vol"],
                     "Value": [
                         f"${latest['ema_20']:,.4f}",
                         f"${latest['ema_50']:,.4f}",
@@ -470,7 +534,7 @@ if matching_markets:
             
             with d2:
                 st.markdown("##### Sentiment Index")
-                st.write(f"**Crypto Fear & Greed Value:** `{fng['value']}`")
+                st.write(f"**Crypto Fear & Greed:** `{fng['value']}`")
                 st.write(f"**Market State:** `{fng['classification']}`")
 
         with tab5:
