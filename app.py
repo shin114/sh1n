@@ -13,9 +13,42 @@ st.set_page_config(
 )
 
 # --- Best Practice Constants ---
-# 100 bars on 4h/1d timeframes provides the ideal historical window 
-# for identifying major structural swing highs and lows without micro-noise.
 DEFAULT_FIB_LOOKBACK = 100
+
+# --- Helper Functions: Dynamic Precision Formatting ---
+def format_price(val):
+    """
+    Dynamically format prices based on order of magnitude 
+    so micro-cap tokens (e.g. 1000SATS, REZ) retain accurate precision.
+    """
+    if val is None or np.isnan(val):
+        return "$0.00"
+    abs_val = abs(val)
+    if abs_val == 0:
+        return "$0.00"
+    elif abs_val >= 100:
+        return f"${val:,.2f}"
+    elif abs_val >= 1:
+        return f"${val:,.4f}"
+    elif abs_val >= 0.001:
+        return f"${val:,.6f}"
+    else:
+        return f"${val:,.8f}"
+
+def format_decimal(val, default_dp=4):
+    """Dynamically format technical indicators (like MACD) without zero-clipping."""
+    if val is None or np.isnan(val):
+        return "0.00"
+    abs_val = abs(val)
+    if abs_val == 0:
+        return "0.00"
+    elif abs_val >= 1:
+        return f"{val:,.{default_dp}f}"
+    elif abs_val >= 0.001:
+        return f"{val:,.6f}"
+    else:
+        return f"{val:,.8f}"
+
 
 # --- Responsive CSS & Typography Styling ---
 st.markdown("""
@@ -36,7 +69,7 @@ st.markdown("""
 
     /* 3. Metric Value Adjustments - Full visibility without clipping */
     [data-testid="stMetricValue"] {
-        font-size: clamp(1.0rem, 3.8vw, 1.35rem) !important;
+        font-size: clamp(0.95rem, 3.6vw, 1.30rem) !important;
         font-weight: 700 !important;
         white-space: normal !important;
         word-break: break-word !important;
@@ -191,7 +224,7 @@ def calculate_fibonacci_levels(df, lookback=DEFAULT_FIB_LOOKBACK):
     recent_df = df.tail(lookback)
     high_val = recent_df['high'].max()
     low_val = recent_df['low'].min()
-    diff = high_val - low_val if high_val != low_val else 1.0
+    diff = high_val - low_val if high_val != low_val else (high_val * 0.01 if high_val != 0 else 1e-8)
 
     fibs = {
         '1.000 (Swing Low)': low_val,
@@ -206,9 +239,7 @@ def calculate_fibonacci_levels(df, lookback=DEFAULT_FIB_LOOKBACK):
 
 # --- 4. Setup Scoring Engine ---
 def evaluate_confluence(df, fibs, derivatives, fng):
-    """
-    Evaluates 6 key market indicators and compiles a single 'Setup Strength Score' out of 100.
-    """
+    """Evaluates 6 key market indicators and compiles a single 'Setup Strength Score' out of 100."""
     latest = df.iloc[-1]
     prev = df.iloc[-2]
     price = latest['close']
@@ -238,7 +269,7 @@ def evaluate_confluence(df, fibs, derivatives, fng):
         mom_score -= 10  
     breakdown['Momentum (RSI & MACD)'] = {
         'score': max(-20, min(20, mom_score)), 'max': 20,
-        'detail': f"RSI: {rsi:.1f} | MACD Hist: {latest['macd_hist']:.4f}"
+        'detail': f"RSI: {rsi:.1f} | MACD Hist: {format_decimal(latest['macd_hist'])}"
     }
 
     # 3. Volume & Order Flow
@@ -343,8 +374,8 @@ def generate_plain_english_trade_plan(df, fibs, score):
 
         rationale = [
             f"**Trend Control:** High setup score (+{score}/100) indicates buyers dominate this market.",
-            f"**Entry Strategy:** Buy between **${entry_min:,.4f}** and **${entry_max:,.4f}** on minor dips.",
-            f"**Risk Management:** Cut losses if a candle closes below **${sl:,.4f}** (Risk: -{((price-sl)/price)*100:.2f}%)."
+            f"**Entry Strategy:** Buy between **{format_price(entry_min)}** and **{format_price(entry_max)}** on minor dips.",
+            f"**Risk Management:** Cut losses if a candle closes below **{format_price(sl)}** (Risk: -{((price-sl)/price)*100:.2f}%)."
         ]
 
     # Case 2: BEARISH SELL SIGNAL (Score <= -25)
@@ -375,8 +406,8 @@ def generate_plain_english_trade_plan(df, fibs, score):
 
         rationale = [
             f"**Trend Control:** Low setup score ({score}/100) indicates sellers are pushing price lower.",
-            f"**Entry Strategy:** Sell or short relief bounces between **${entry_min:,.4f}** and **${entry_max:,.4f}**.",
-            f"**Risk Management:** Cut losses if a candle closes above **${sl:,.4f}** (Risk: -{((sl-price)/price)*100:.2f}%)."
+            f"**Entry Strategy:** Sell or short relief bounces between **{format_price(entry_min)}** and **{format_price(entry_max)}**.",
+            f"**Risk Management:** Cut losses if a candle closes above **{format_price(sl)}** (Risk: -{((sl-price)/price)*100:.2f}%)."
         ]
 
     # Case 3: NEUTRAL / RANGEBOUND (Score between -25 and +25)
@@ -389,13 +420,13 @@ def generate_plain_english_trade_plan(df, fibs, score):
         rationale = [
             f"**Market Indecision:** Setup score is neutral ({score}/100). Technical indicators conflict.",
             "**Strategy:** No high-probability entry right now. Cash is a valid position.",
-            f"**Action Plan:** Wait for price to pull back to key Fib levels (${golden_pocket:,.4f}) or break out."
+            f"**Action Plan:** Wait for price to pull back to key Fib levels ({format_price(golden_pocket)}) or break out."
         ]
 
     return {
         "action": action,
         "probability": probability,
-        "entry_range": f"${entry_min:,.4f} -${entry_max:,.4f}",
+        "entry_range": f"{format_price(entry_min)} - {format_price(entry_max)}",
         "sl": sl,
         "tp1": tp1,
         "tp2": tp2,
@@ -415,7 +446,7 @@ all_markets = fetch_all_usdt_markets()
 # Default Ticker = GRT
 search_query = st.sidebar.text_input("Search Ticker / Pair:", value="GRT").strip().upper()
 
-# Default Timeframe = 4h (Best default for crypto swing trading)
+# Default Timeframe = 4h
 timeframe = st.sidebar.selectbox(
     "Select Timeframe:", 
     options=['15m', '1h', '4h', '1d'], 
@@ -449,10 +480,10 @@ if matching_markets:
         prev_price = df['close'].iloc[-2]
         price_change_pct = ((latest_price - prev_price) / prev_price) * 100
 
-        # --- HIGH-LEVEL OVERVIEW (2x2 Grid for Clean Text Display on Desktop & Mobile) ---
+        # --- HIGH-LEVEL OVERVIEW ---
         row1_col1, row1_col2 = st.columns(2)
         with row1_col1:
-            st.metric("Current Price", f"${latest_price:,.4f}", f"{price_change_pct:+.2f}%")
+            st.metric("Current Price", format_price(latest_price), f"{price_change_pct:+.2f}%")
         with row1_col2:
             st.metric("Market Action", trade_plan['action'])
 
@@ -482,11 +513,11 @@ if matching_markets:
         with st.container():
             p_col1, p_col2 = st.columns(2)
             p_col1.metric("1. Entry Zone", trade_plan['entry_range'])
-            p_col2.metric("2. Hard Stop Loss", f"${trade_plan['sl']:,.4f}", f"-{trade_plan['risk_pct']:.2f}%")
+            p_col2.metric("2. Hard Stop Loss", format_price(trade_plan['sl']), f"-{trade_plan['risk_pct']:.2f}%")
             
             p_col3, p_col4 = st.columns(2)
-            p_col3.metric("3. Take Profit 1", f"${trade_plan['tp1']:,.4f}", f"+{trade_plan['tp1_pct']:.2f}%")
-            p_col4.metric("4. Take Profit 2", f"${trade_plan['tp2']:,.4f}", f"+{trade_plan['tp2_pct']:.2f}%")
+            p_col3.metric("3. Take Profit 1", format_price(trade_plan['tp1']), f"+{trade_plan['tp1_pct']:.2f}%")
+            p_col4.metric("4. Take Profit 2", format_price(trade_plan['tp2']), f"+{trade_plan['tp2_pct']:.2f}%")
 
         st.divider()
 
@@ -507,7 +538,7 @@ if matching_markets:
             st.info(
                 "🛡 **Wick Protection Rule:** "
                 "Avoid panicking on temporary price spikes. "
-                f"Only close your trade if a **{timeframe.upper()} candle closes beyond ${trade_plan['sl']:,.4f}**."
+                f"Only close your trade if a **{timeframe.upper()} candle closes beyond {format_price(trade_plan['sl'])}**."
             )
 
         with tab2:
@@ -532,7 +563,7 @@ if matching_markets:
                 st.subheader("Fibonacci Retracements")
                 fib_df = pd.DataFrame(list(fibs.items()), columns=['Fib Level', 'Price Level'])
                 fib_df['Distance'] = fib_df['Price Level'].apply(lambda x: f"{((latest_price - x)/x)*100:+.2f}%")
-                fib_df['Price Level'] = fib_df['Price Level'].apply(lambda x: f"${x:,.4f}")
+                fib_df['Price Level'] = fib_df['Price Level'].apply(format_price)
                 st.table(fib_df)
 
             with col_b:
@@ -541,11 +572,11 @@ if matching_markets:
                 tech_data = {
                     "Metric": ["EMA 20", "EMA 50", "EMA 200", "RSI (14)", "MACD Hist", "20-SMA Vol"],
                     "Value": [
-                        f"${latest['ema_20']:,.4f}",
-                        f"${latest['ema_50']:,.4f}",
-                        f"${latest['ema_200']:,.4f}",
+                        format_price(latest['ema_20']),
+                        format_price(latest['ema_50']),
+                        format_price(latest['ema_200']),
                         f"{latest['rsi']:.2f}",
-                        f"{latest['macd_hist']:.4f}",
+                        format_decimal(latest['macd_hist']),
                         f"{latest['vol_sma_20']:,.2f}"
                     ]
                 }
