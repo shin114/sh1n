@@ -18,22 +18,23 @@ DEFAULT_FIB_LOOKBACK = 100
 # --- Helper Functions: Dynamic Precision Formatting ---
 def format_price(val):
     """
-    Dynamically format prices based on order of magnitude 
-    so micro-cap tokens (e.g. 1000SATS, REZ) retain accurate precision.
+    Dynamically format prices based on order of magnitude.
+    Uses escaped dollar signs (\\$) to prevent Streamlit from treating
+    price pairs as LaTeX math formulas.
     """
     if val is None or np.isnan(val):
-        return "$0.00"
+        return r"\$0.00"
     abs_val = abs(val)
     if abs_val == 0:
-        return "$0.00"
+        return r"\$0.00"
     elif abs_val >= 100:
-        return f"${val:,.2f}"
+        return f"\\${val:,.2f}"
     elif abs_val >= 1:
-        return f"${val:,.4f}"
+        return f"\\${val:,.4f}"
     elif abs_val >= 0.001:
-        return f"${val:,.6f}"
+        return f"\\${val:,.6f}"
     else:
-        return f"${val:,.8f}"
+        return f"\\${val:,.8f}"
 
 def format_decimal(val, default_dp=4):
     """Dynamically format technical indicators (like MACD) without zero-clipping."""
