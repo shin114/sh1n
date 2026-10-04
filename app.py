@@ -264,6 +264,32 @@ def calculate_fibonacci_levels(df, lookback=DEFAULT_FIB_LOOKBACK):
     }
     return fibs, high_val, low_val
 
+def fetch_recent_pivots(df):
+    """
+    Identifies recent major local swing highs (Resistance) and swing lows (Support)
+    using standard 5-candle Williams Fractal patterns.
+    """
+    if len(df) < 5:
+        return [], []
+        
+    highs = df['high']
+    lows = df['low']
+    
+    is_pivot_high = (
+        (highs > highs.shift(1)) & (highs > highs.shift(2)) &
+        (highs > highs.shift(-1)) & (highs > highs.shift(-2))
+    )
+    
+    is_pivot_low = (
+        (lows < lows.shift(1)) & (lows < lows.shift(2)) &
+        (lows < lows.shift(-1)) & (lows < lows.shift(-2))
+    )
+    
+    recent_res = df[is_pivot_high]['high'].dropna().tail(3).tolist()
+    recent_sup = df[is_pivot_low]['low'].dropna().tail(3).tolist()
+    
+    return recent_res, recent_sup
+
 # --- 4. Setup Scoring Engine ---
 def evaluate_confluence(df, fibs, derivatives, fng):
     """Evaluates 6 key market indicators and compiles a single 'Setup Strength Score' out of 100."""
@@ -664,20 +690,21 @@ if matching_markets:
                 st.table(fib_df)
 
             with col_b:
-                st.subheader("Key Indicators")
-                latest = df.iloc[-1]
-                tech_data = {
-                    "Metric": ["EMA 20", "EMA 50", "EMA 200", "RSI (14)", "MACD Hist", "20-SMA Vol"],
-                    "Value": [
-                        format_price(latest['ema_20']),
-                        format_price(latest['ema_50']),
-                        format_price(latest['ema_200']),
-                        f"{latest['rsi']:.2f}",
-                        format_decimal(latest['macd_hist']),
-                        f"{latest['vol_sma_20']:,.2f}"
-                    ]
-                }
-                st.table(pd.DataFrame(tech_data))
+                st.subheader("Historical Pivot S/R")
+                recent_res, recent_sup = fetch_recent_pivots(df)
+                
+                pivot_data = []
+                if recent_res:
+                    for res in reversed(recent_res):
+                        pivot_data.append({"Type": "Resistance 🔴", "Level": format_price(res)})
+                if recent_sup:
+                    for sup in reversed(recent_sup):
+                        pivot_data.append({"Type": "Support 🟢", "Level": format_price(sup)})
+                
+                if pivot_data:
+                    st.table(pd.DataFrame(pivot_data))
+                else:
+                    st.info("No fractal pivots detected in recent candles.")
 
         with tab4:
             st.subheader("Derivatives & Market Sentiment")
