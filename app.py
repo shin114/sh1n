@@ -13,14 +13,12 @@ st.set_page_config(
 )
 
 # --- 1. Exchange & API Initialization ---
-@st.cache_resource
-def get_exchange():
-    return ccxt.bybit({'enableRateLimit': True})
-
-exchange = get_exchange()
 exchange = ccxt.bybit({
-    'hostname': 'bytick.com',  # Redirects requests from api.bybit.com -> api.bytick.com
-    'enableRateLimit': True,
+    'headers': {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
 })
 
 # Test market fetching
