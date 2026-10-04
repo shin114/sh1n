@@ -1,6 +1,6 @@
-streamlit
-ccxt
-pandas
-numpy
-pandas-ta
-scipy
+streamlit>=1.35.0
+ccxt>=4.3.0
+pandas>=2.0.0
+numpy>=1.26.0
+scipy>=1.11.0
+pandas-ta-classic>=0.8.0
