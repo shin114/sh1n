@@ -7,7 +7,7 @@ import time
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(
-    page_title="SH1N Multi-Factor Crypto Confluence Engine",
+    page_title="SH1N",
     page_icon="⚡",
     layout="wide"
 )
@@ -18,6 +18,14 @@ def get_exchange():
     return ccxt.bybit({'enableRateLimit': True})
 
 exchange = get_exchange()
+exchange = ccxt.bybit({
+    'hostname': 'bytick.com',  # Redirects requests from api.bybit.com -> api.bytick.com
+    'enableRateLimit': True,
+})
+
+# Test market fetching
+markets = exchange.load_markets()
+print(f"Successfully loaded {len(markets)} markets.")
 
 # --- 2. Data Fetching Utilities ---
 @st.cache_data(ttl=3600)
@@ -240,7 +248,7 @@ def evaluate_confluence(df, fibs, derivatives, fng):
     return total_score, breakdown
 
 # --- 5. Streamlit User Interface ---
-st.title("⚡ Crypto Multi-Factor Swing Analysis Engine")
+st.title("⚡ SH1N Crypto Swing Analysis Engine")
 st.caption("Integrated Price Action, Volume, Technicals, Bybit Derivatives, and Macro Sentiment")
 
 # Sidebar Controls
