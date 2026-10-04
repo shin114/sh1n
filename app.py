@@ -9,8 +9,8 @@ import time
 st.set_page_config(
     page_title="SH1N",
     page_icon="⚡",
-    layout="centered",  # Enforces portrait proportions on desktop
-    initial_sidebar_state="expanded"  # Ensures sidebar starts open on load
+    layout="centered",
+    initial_sidebar_state="expanded"
 )
 
 # --- Developer Mode & Branding Visibility ---
@@ -20,31 +20,35 @@ is_dev_mode = st.query_params.get("dev", ["false"])[0].lower() == "true" if isin
 if not is_dev_mode:
     st.markdown("""
         <style>
-        /* 1. Keep top header transparent and elevated so sidebar toggle stays interactive */
+        /* 1. Keep top header transparent without collapsing its flexbox container */
         header[data-testid="stHeader"], [data-testid="stHeader"] {
             background: transparent !important;
-            z-index: 100000 !important;
         }
 
-        /* 2. Explicitly keep sidebar expand/collapse arrows visible */
-        [data-testid="stSidebarCollapsedControl"],
-        [data-testid="stSidebarCollapsedControl"] button,
-        [data-testid="stSidebarCollapseButton"],
-        button[aria-label*="sidebar"],
-        button[aria-label*="Sidebar"] {
-            visibility: visible !important;
-            display: inline-flex !important;
-            opacity: 1 !important;
-        }
-
-        /* 3. Target and hide strictly top-right dev menu, status, and footer */
-        [data-testid="stToolbar"],
-        [data-testid="stDecoration"],
+        /* 2. Hide ONLY top-right menu actions, status widget, decoration, and footer */
+        [data-testid="stHeaderActionElements"],
+        [data-testid="stToolbarActionElements"],
         [data-testid="stStatusWidget"],
+        [data-testid="stDecoration"],
         #MainMenu,
         footer {
             visibility: hidden !important;
             display: none !important;
+        }
+
+        /* 3. Preserve sidebar toggle arrow (expand/collapse controls) */
+        [data-testid="stSidebarCollapsedControl"],
+        [data-testid="stSidebarCollapseButton"] {
+            visibility: visible !important;
+            display: flex !important;
+            opacity: 1 !important;
+            z-index: 999999 !important;
+        }
+
+        /* Ensure the collapsed icon button retains pointer interactions */
+        [data-testid="stSidebarCollapsedControl"] button {
+            visibility: visible !important;
+            display: inline-flex !important;
         }
         </style>
     """, unsafe_allow_html=True)
