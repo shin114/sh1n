@@ -249,7 +249,6 @@ def generate_plain_english_trade_plan(df, fibs, score):
     if score >= 25:
         action = "BUY / LONG 🟢"
         
-        # Calculate Win Probability tier based on confluence magnitude
         if score >= 65:
             probability = "High Win Probability (~75% - 82%)"
         elif score >= 45:
@@ -257,21 +256,18 @@ def generate_plain_english_trade_plan(df, fibs, score):
         else:
             probability = "Moderate Win Probability (~55% - 64%)"
 
-        # Determine optimal entry zone near support or current price
         support_levels = [v for k, v in fibs.items() if v <= price]
         key_support = max(support_levels) if support_levels else price - (atr * 1.5)
         
         entry_min = min(key_support, price * 0.992)
         entry_max = price
         
-        # Hard Stop Loss below key support minus ATR buffer
         sl = key_support - (1.5 * atr)
         risk_per_unit = price - sl
         if risk_per_unit <= 0:
             risk_per_unit = atr * 1.5
             sl = price - risk_per_unit
 
-        # Take Profit targets based on Risk:Reward ratios (1.5R and 2.5R)
         tp1 = price + (risk_per_unit * 1.5)
         tp2 = max(swing_high, price + (risk_per_unit * 2.5))
 
@@ -333,9 +329,9 @@ def generate_plain_english_trade_plan(df, fibs, score):
         "sl": sl,
         "tp1": tp1,
         "tp2": tp2,
-        "risk_pct": abs(((price - sl) / price) * 100) if sl != price else 0,
-        "tp1_pct": abs(((tp1 - price) / price) * 100) if tp1 != price else 0,
-        "tp2_pct": abs(((tp2 - price) / price) * 100) if tp2 != price else 0,
+        "risk_pct": abs(((price - sl) / price) * 100) if sl != price and price > 0 else 0,
+        "tp1_pct": abs(((tp1 - price) / price) * 100) if tp1 != price and price > 0 else 0,
+        "tp2_pct": abs(((tp2 - price) / price) * 100) if tp2 != price and price > 0 else 0,
         "rationale": rationale
     }
 
@@ -389,9 +385,16 @@ if matching_markets:
         # --- PROMINENT ACTION CARD FOR NON-TECHNICAL USERS ---
         st.subheader("🎯 Simple Execution Summary (Where to Trade & Exit)")
         
-        box_type = st.success if "BUY" in trade_plan['action'] else (st.error if "SELL" in trade_plan['action'] else st.warning)
+        # Display Banner Alert based on signal
+        if "BUY" in trade_plan['action']:
+            st.success("🟢 **BULLISH TRADE SETUP DETECTED**")
+        elif "SELL" in trade_plan['action']:
+            st.error("🔴 **BEARISH TRADE SETUP DETECTED**")
+        else:
+            st.warning("⏸️ **NEUTRAL MARKET / STAND BY**")
         
-        with box_type():
+        # Bordered Execution Box
+        with st.container():
             p_col1, p_col2, p_col3, p_col4 = st.columns(4)
             p_col1.metric("1. Optimal Entry Zone", trade_plan['entry_range'])
             p_col2.metric("2. Take Profit 1 (Scale Out 50%)", f"${trade_plan['tp1']:,.4f}", f"+{trade_plan['tp1_pct']:.2f}% (1.5 R:R)")
@@ -415,7 +418,7 @@ if matching_markets:
                 st.markdown(f"- {item}")
                 
             st.info(
-                "🛡️ **Execution Rule (Wick Protection):** "
+                "🛡️️ **Execution Rule (Wick Protection):** "
                 f"Do not panic exit on a brief intraday price spike. "
                 f"Only trigger your Stop Loss if a **{timeframe.upper()} candle closes beyond ${trade_plan['sl']:,.4f}**."
             )
