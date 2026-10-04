@@ -24,8 +24,8 @@ exchange = ccxt.bybit({
 })
 
 # Test market fetching
-markets = exchange.load_markets()
-print(f"Successfully loaded {len(markets)} markets.")
+#markets = exchange.load_markets()
+#print(f"Successfully loaded {len(markets)} markets.")
 
 # --- 2. Data Fetching Utilities ---
 @st.cache_data(ttl=3600)
