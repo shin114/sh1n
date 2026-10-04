@@ -1,0 +1,6 @@
+streamlit
+ccxt
+pandas
+numpy
+pandas-ta
+scipy
