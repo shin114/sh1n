@@ -9,8 +9,13 @@ import time
 st.set_page_config(
     page_title="SH1N",
     page_icon="⚡",
-    layout="centered"  # Centered layout enforces portrait proportions on desktop
+    layout="centered"  # Enforces portrait proportions on desktop
 )
+
+# --- Best Practice Constants ---
+# 100 bars on 4h/1d timeframes provides the ideal historical window 
+# for identifying major structural swing highs and lows without micro-noise.
+DEFAULT_FIB_LOOKBACK = 100
 
 # --- Responsive CSS & Typography Styling ---
 st.markdown("""
@@ -24,27 +29,25 @@ st.markdown("""
         padding-right: 1rem !important;
     }
 
-    /* 2. Fluid Headers (Prevents oversized text on mobile) */
+    /* 2. Fluid Headers */
     h1 { font-size: clamp(1.4rem, 5vw, 2.1rem) !important; font-weight: 700 !important; }
     h2 { font-size: clamp(1.2rem, 4vw, 1.6rem) !important; font-weight: 600 !important; }
     h3 { font-size: clamp(1.05rem, 3.2vw, 1.3rem) !important; font-weight: 600 !important; }
 
-    /* 3. Auto-scaling Metrics for readable numbers on all screens */
+    /* 3. Metric Value Adjustments - Full visibility without clipping */
     [data-testid="stMetricValue"] {
-        font-size: clamp(0.95rem, 3.5vw, 1.3rem) !important;
+        font-size: clamp(1.0rem, 3.8vw, 1.35rem) !important;
         font-weight: 700 !important;
-        overflow-wrap: break-word !important;
+        white-space: normal !important;
+        word-break: break-word !important;
     }
     [data-testid="stMetricLabel"] {
-        font-size: clamp(0.72rem, 2.5vw, 0.85rem) !important;
+        font-size: clamp(0.75rem, 2.6vw, 0.88rem) !important;
         font-weight: 600 !important;
         color: #64748b !important;
     }
-    [data-testid="stMetricDelta"] {
-        font-size: clamp(0.7rem, 2.2vw, 0.82rem) !important;
-    }
 
-    /* 4. Responsive 2x2 Grid on Mobile for 4-Column Layouts */
+    /* 4. Column Padding & Responsive Spacing */
     @media (max-width: 640px) {
         [data-testid="stHorizontalBlock"] {
             flex-wrap: wrap !important;
@@ -76,7 +79,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# --- 1. Exchange & API Initialization ---
+# --- 1. Exchange Initialization ---
 exchange = ccxt.bitget({
     'enableRateLimit': True,
 })
@@ -104,7 +107,7 @@ def fetch_all_usdt_markets():
         return []
 
 @st.cache_data(ttl=300)
-def fetch_ohlcv_data(symbol, timeframe='1d', limit=150):
+def fetch_ohlcv_data(symbol, timeframe='4h', limit=150):
     """Fetch candlestick OHLCV data."""
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
@@ -117,7 +120,7 @@ def fetch_ohlcv_data(symbol, timeframe='1d', limit=150):
 
 @st.cache_data(ttl=300)
 def fetch_derivatives_data(symbol):
-    """Fetch Funding Rate & Open Interest if the market is a Perpetual/Swap."""
+    """Fetch Funding Rate & Open Interest if market is Perpetual/Swap."""
     if ":" not in symbol:  # CCXT swap symbols contain ':'
         return {"funding_rate_pct": 0.0, "open_interest": 0.0, "is_perp": False}
     try:
@@ -135,7 +138,7 @@ def fetch_derivatives_data(symbol):
 
 @st.cache_data(ttl=3600)
 def fetch_fear_and_greed():
-    """Fetch global Crypto Fear & Greed Index from Alternative.me."""
+    """Fetch global Crypto Fear & Greed Index."""
     try:
         res = requests.get("https://api.alternative.me/fng/", timeout=5).json()
         data = res['data'][0]
@@ -183,8 +186,8 @@ def calculate_technical_indicators(df):
 
     return df
 
-def calculate_fibonacci_levels(df, lookback=50):
-    """Calculate swing highs, lows, and Fibonacci retracements over lookback period."""
+def calculate_fibonacci_levels(df, lookback=DEFAULT_FIB_LOOKBACK):
+    """Calculate swing highs, lows, and Fibonacci retracements."""
     recent_df = df.tail(lookback)
     high_val = recent_df['high'].max()
     low_val = recent_df['low'].min()
@@ -201,8 +204,11 @@ def calculate_fibonacci_levels(df, lookback=50):
     }
     return fibs, high_val, low_val
 
-# --- 4. Confluence Scoring Engine ---
+# --- 4. Setup Scoring Engine ---
 def evaluate_confluence(df, fibs, derivatives, fng):
+    """
+    Evaluates 6 key market indicators and compiles a single 'Setup Strength Score' out of 100.
+    """
     latest = df.iloc[-1]
     prev = df.iloc[-2]
     price = latest['close']
@@ -214,9 +220,9 @@ def evaluate_confluence(df, fibs, derivatives, fng):
     if price > latest['ema_20']: trend_score += 10
     if latest['ema_20'] > latest['ema_50']: trend_score += 10
     if latest['ema_50'] > latest['ema_200']: trend_score += 10
-    breakdown['Trend & Structure'] = {
+    breakdown['Trend Alignment'] = {
         'score': trend_score, 'max': 30,
-        'detail': f"Price vs EMAs (20/50/200). Current: {'Bullish Stack' if trend_score == 30 else 'Mixed/Bearish'}"
+        'detail': f"Price vs EMAs (20/50/200): {'Bullish Stack' if trend_score == 30 else 'Mixed/Bearish'}"
     }
 
     # 2. Momentum & Oscillators
@@ -240,12 +246,12 @@ def evaluate_confluence(df, fibs, derivatives, fng):
     if latest['volume'] > latest['vol_sma_20']: vol_score += 8
     if latest['obv'] > prev['obv']: vol_score += 7
     else: vol_score -= 7
-    breakdown['Volume & Order Flow'] = {
+    breakdown['Volume Strength'] = {
         'score': max(-15, min(15, vol_score)), 'max': 15,
-        'detail': f"Vol > 20-SMA: {latest['volume'] > latest['vol_sma_20']} | OBV Trending Up: {latest['obv'] > prev['obv']}"
+        'detail': f"Above 20-SMA Vol: {latest['volume'] > latest['vol_sma_20']} | OBV Up: {latest['obv'] > prev['obv']}"
     }
 
-    # 4. Fibonacci & Key Levels
+    # 4. Fibonacci Key Levels
     fib_score = 0
     golden_pocket = fibs['0.618 (Golden Pocket)']
     mid_point = fibs['0.500 (Mid Point)']
@@ -256,12 +262,12 @@ def evaluate_confluence(df, fibs, derivatives, fng):
         fib_score = 15  
     elif dist_0618 < 0.03:
         fib_score = 10
-    breakdown['Fibonacci & Key Levels'] = {
+    breakdown['Fibonacci Key Levels'] = {
         'score': fib_score, 'max': 15,
-        'detail': f"0.618 Level: ${golden_pocket:,.4f} (Distance: {dist_0618*100:.2f}%)"
+        'detail': f"Distance to Golden Pocket (0.618): {dist_0618*100:.2f}%"
     }
 
-    # 5. Derivatives Positioning
+    # 5. Derivatives Setup
     deriv_score = 0
     if derivatives['is_perp']:
         fr = derivatives['funding_rate_pct']
@@ -273,12 +279,12 @@ def evaluate_confluence(df, fibs, derivatives, fng):
             deriv_score -= 10  
     else:
         deriv_score = 5  
-    breakdown['Derivatives Setup'] = {
+    breakdown['Derivatives Data'] = {
         'score': max(-10, min(10, deriv_score)), 'max': 10,
-        'detail': f"Funding Rate: {derivatives['funding_rate_pct']:.4f}%" if derivatives['is_perp'] else "Spot Pair (N/A)"
+        'detail': f"Funding Rate: {derivatives['funding_rate_pct']:.4f}%" if derivatives['is_perp'] else "Spot Market"
     }
 
-    # 6. Market Sentiment
+    # 6. Overall Market Sentiment
     sent_score = 0
     fng_val = fng['value']
     if fng_val < 25:
@@ -295,10 +301,10 @@ def evaluate_confluence(df, fibs, derivatives, fng):
     total_score = sum(item['score'] for item in breakdown.values())
     return total_score, breakdown
 
-# --- 5. Non-Technical Trade Plan Deductor ---
+# --- 5. Simplified Trade Plan Deductor ---
 def generate_plain_english_trade_plan(df, fibs, score):
     """
-    Translates technical indicators into a simplified, actionable trade recommendation
+    Translates technical indicators into a simplified recommendation
     with estimated win probability, entry range, SL, TP1, and TP2.
     """
     latest = df.iloc[-1]
@@ -336,7 +342,7 @@ def generate_plain_english_trade_plan(df, fibs, score):
         tp2 = max(swing_high, price + (risk_per_unit * 2.5))
 
         rationale = [
-            f"**Trend Control:** High confluence score (+{score}/100) indicates buyers dominate this market.",
+            f"**Trend Control:** High setup score (+{score}/100) indicates buyers dominate this market.",
             f"**Entry Strategy:** Buy between **${entry_min:,.4f}** and **${entry_max:,.4f}** on minor dips.",
             f"**Risk Management:** Cut losses if a candle closes below **${sl:,.4f}** (Risk: -{((price-sl)/price)*100:.2f}%)."
         ]
@@ -368,7 +374,7 @@ def generate_plain_english_trade_plan(df, fibs, score):
         tp2 = min(swing_low, price - (risk_per_unit * 2.5))
 
         rationale = [
-            f"**Trend Control:** Low confluence score ({score}/100) indicates sellers are pushing price lower.",
+            f"**Trend Control:** Low setup score ({score}/100) indicates sellers are pushing price lower.",
             f"**Entry Strategy:** Sell or short relief bounces between **${entry_min:,.4f}** and **${entry_max:,.4f}**.",
             f"**Risk Management:** Cut losses if a candle closes above **${sl:,.4f}** (Risk: -{((sl-price)/price)*100:.2f}%)."
         ]
@@ -381,9 +387,9 @@ def generate_plain_english_trade_plan(df, fibs, score):
         sl, tp1, tp2 = price, price, price
 
         rationale = [
-            f"**Market Indecision:** Confluence score is neutral ({score}/100). Indicators conflict.",
+            f"**Market Indecision:** Setup score is neutral ({score}/100). Technical indicators conflict.",
             "**Strategy:** No high-probability entry right now. Cash is a valid position.",
-            f"**Action Plan:** Wait for price to pull back to major Fib levels (${golden_pocket:,.4f}) or break out."
+            f"**Action Plan:** Wait for price to pull back to key Fib levels (${golden_pocket:,.4f}) or break out."
         ]
 
     return {
@@ -399,21 +405,27 @@ def generate_plain_english_trade_plan(df, fibs, score):
         "rationale": rationale
     }
 
-# --- 6. Streamlit User Interface ---
-st.title("⚡ SH1N Crypto Swing Analysis Engine")
-st.caption("Simplified Trading Recommendations Driven by Multi-Layer Market Confluence")
+# --- 6. User Interface ---
+st.title("⚡ SH1N Swing Analysis Engine")
+st.caption("Simplified Trading Signals Driven by Multi-Layer Market Analysis")
 
 # Sidebar Controls
 all_markets = fetch_all_usdt_markets()
 
-search_query = st.sidebar.text_input("Search Ticker / Pair:", value="BTC").strip().upper()
-timeframe = st.sidebar.selectbox("Select Timeframe:", options=['15m', '1h', '4h', '1d'], index=3)
-lookback_period = st.sidebar.slider("Fibonacci Lookback Bars:", min_value=20, max_value=200, value=50)
+# Default Ticker = GRT
+search_query = st.sidebar.text_input("Search Ticker / Pair:", value="GRT").strip().upper()
 
-# Filter matching pairs
+# Default Timeframe = 4h (Best default for crypto swing trading)
+timeframe = st.sidebar.selectbox(
+    "Select Timeframe:", 
+    options=['15m', '1h', '4h', '1d'], 
+    index=2
+)
+
+# Prefix Search Filter (grt* wildcard style)
 matching_markets = [
     m for m in all_markets 
-    if search_query in m['base'] or search_query in m['symbol']
+    if m['base'].startswith(search_query) or m['symbol'].startswith(search_query)
 ]
 
 if matching_markets:
@@ -421,15 +433,15 @@ if matching_markets:
     selected_market = next(m for m in matching_markets if m['label'] == selected_label)
     symbol = selected_market['symbol']
     
-    # Run Complete Pipeline
-    with st.spinner(f"Analyzing market probability for {symbol}..."):
+    # Fetch Data & Process
+    with st.spinner(f"Evaluating market probability for {symbol}..."):
         df = fetch_ohlcv_data(symbol, timeframe=timeframe)
         derivatives = fetch_derivatives_data(symbol)
         fng = fetch_fear_and_greed()
 
     if not df.empty and len(df) >= 30:
         df = calculate_technical_indicators(df)
-        fibs, swing_high, swing_low = calculate_fibonacci_levels(df, lookback=lookback_period)
+        fibs, swing_high, swing_low = calculate_fibonacci_levels(df, lookback=DEFAULT_FIB_LOOKBACK)
         score, score_breakdown = evaluate_confluence(df, fibs, derivatives, fng)
         trade_plan = generate_plain_english_trade_plan(df, fibs, score)
 
@@ -437,58 +449,74 @@ if matching_markets:
         prev_price = df['close'].iloc[-2]
         price_change_pct = ((latest_price - prev_price) / prev_price) * 100
 
-        # --- HIGH LEVEL OVERVIEW HEADER ---
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Current Price", f"${latest_price:,.4f}", f"{price_change_pct:+.2f}%")
-        col2.metric("Market Action", trade_plan['action'])
-        col3.metric("Est. Win Rate", trade_plan['probability'])
-        col4.metric("Confluence Score", f"{score} / 100")
+        # --- HIGH-LEVEL OVERVIEW (2x2 Grid for Clean Text Display on Desktop & Mobile) ---
+        row1_col1, row1_col2 = st.columns(2)
+        with row1_col1:
+            st.metric("Current Price", f"${latest_price:,.4f}", f"{price_change_pct:+.2f}%")
+        with row1_col2:
+            st.metric("Market Action", trade_plan['action'])
+
+        row2_col1, row2_col2 = st.columns(2)
+        with row2_col1:
+            st.metric("Est. Win Rate", trade_plan['probability'])
+        with row2_col2:
+            st.metric(
+                "Setup Strength Score", 
+                f"{score} / 100", 
+                help="Scores above +25 suggest strong buying setups. Scores below -25 suggest selling setups."
+            )
 
         st.divider()
 
-        # --- PROMINENT ACTION CARD FOR NON-TECHNICAL USERS ---
-        st.subheader("🎯 Simple Execution Summary")
+        # --- SIMPLE EXECUTION SUMMARY CARD ---
+        st.subheader("🎯 Execution Summary")
         
-        # Display Banner Alert based on signal
         if "BUY" in trade_plan['action']:
-            st.success("🟢 **BULLISH TRADE SETUP DETECTED**")
+            st.success("🟢 **BULLISH SETUP DETECTED**")
         elif "SELL" in trade_plan['action']:
-            st.error("🔴 **BEARISH TRADE SETUP DETECTED**")
+            st.error("🔴 **BEARISH SETUP DETECTED**")
         else:
             st.warning("⏸️ **NEUTRAL MARKET / STAND BY**")
         
         # Bordered Execution Box
         with st.container():
-            p_col1, p_col2, p_col3, p_col4 = st.columns(4)
+            p_col1, p_col2 = st.columns(2)
             p_col1.metric("1. Entry Zone", trade_plan['entry_range'])
-            p_col2.metric("2. Take Profit 1", f"${trade_plan['tp1']:,.4f}", f"+{trade_plan['tp1_pct']:.2f}%")
-            p_col3.metric("3. Take Profit 2", f"${trade_plan['tp2']:,.4f}", f"+{trade_plan['tp2_pct']:.2f}%")
-            p_col4.metric("4. Hard Stop Loss", f"${trade_plan['sl']:,.4f}", f"-{trade_plan['risk_pct']:.2f}%")
+            p_col2.metric("2. Hard Stop Loss", f"${trade_plan['sl']:,.4f}", f"-{trade_plan['risk_pct']:.2f}%")
+            
+            p_col3, p_col4 = st.columns(2)
+            p_col3.metric("3. Take Profit 1", f"${trade_plan['tp1']:,.4f}", f"+{trade_plan['tp1_pct']:.2f}%")
+            p_col4.metric("4. Take Profit 2", f"${trade_plan['tp2']:,.4f}", f"+{trade_plan['tp2_pct']:.2f}%")
 
         st.divider()
 
         # --- DETAILED TABBED VIEWS ---
         tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "🎯 Strategy", 
-            "📊 Confluence", 
+            "📊 Setup Analysis", 
             "📈 Technicals", 
             "⚡ Derivatives", 
-            "📋 Data"
+            "📋 Raw Data"
         ])
 
         with tab1:
-            st.subheader("💡 Why is this trade recommended?")
+            st.subheader("💡 Why is this recommended?")
             for item in trade_plan['rationale']:
                 st.markdown(f"- {item}")
                 
             st.info(
-                "🛡 **Execution Rule (Wick Protection):** "
-                "Do not panic exit on a brief intraday price spike. "
-                f"Only trigger your Stop Loss if a **{timeframe.upper()} candle closes beyond ${trade_plan['sl']:,.4f}**."
+                "🛡 **Wick Protection Rule:** "
+                "Avoid panicking on temporary price spikes. "
+                f"Only close your trade if a **{timeframe.upper()} candle closes beyond ${trade_plan['sl']:,.4f}**."
             )
 
         with tab2:
-            st.subheader("6-Layer Market Confluence Breakdown")
+            st.subheader("6-Layer Setup Strength Breakdown")
+            st.caption(
+                "**What is Setup Strength?** Instead of relying on a single indicator, "
+                "we analyze 6 separate market layers (Trend, Momentum, Volume, Fibonacci levels, "
+                "Derivatives, and Sentiment). The higher the score out of 100, the more indicators agree on the move."
+            )
             st.progress(max(0, min(100, int((score + 100) / 2))))
             
             for category, data in score_breakdown.items():
@@ -524,24 +552,27 @@ if matching_markets:
                 st.table(pd.DataFrame(tech_data))
 
         with tab4:
-            st.subheader("Derivatives & Macro Metrics")
+            st.subheader("Derivatives & Market Sentiment")
             d1, d2 = st.columns(2)
             with d1:
-                st.markdown("##### Bitget Perpetual Data")
+                st.markdown("##### Bitget Futures Data")
                 st.write(f"**Market Type:** {selected_market['type']}")
                 st.write(f"**Funding Rate:** `{derivatives['funding_rate_pct']:.4f}%`")
                 st.write(f"**Open Interest:** `{derivatives['open_interest']:,.2f}`")
             
             with d2:
-                st.markdown("##### Sentiment Index")
-                st.write(f"**Crypto Fear & Greed:** `{fng['value']}`")
+                st.markdown("##### Global Sentiment")
+                st.write(f"**Fear & Greed Index:** `{fng['value']}`")
                 st.write(f"**Market State:** `{fng['classification']}`")
 
         with tab5:
-            st.subheader("Recent OHLCV Data")
-            st.dataframe(df[['timestamp', 'open', 'high', 'low', 'close', 'volume', 'rsi', 'ema_20', 'ema_50']].tail(20), use_container_width=True)
+            st.subheader("Recent Market Data")
+            st.dataframe(
+                df[['timestamp', 'open', 'high', 'low', 'close', 'volume', 'rsi', 'ema_20', 'ema_50']].tail(20), 
+                use_container_width=True
+            )
 
     else:
-        st.warning("Insufficient OHLCV data returned for this asset/timeframe combination.")
+        st.warning("Insufficient historical data returned for this asset/timeframe combination.")
 else:
-    st.warning(f"No active USDT Spot or Perpetual pairs found matching '{search_query}'.")
+    st.warning(f"No active USDT Spot or Perpetual pairs found starting with '{search_query}'.")
