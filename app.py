@@ -335,20 +335,60 @@ def evaluate_confluence(df, fibs, derivatives, fng):
         'detail': f"Above 20-SMA Vol: {latest['volume'] > latest['vol_sma_20']} | OBV Up: {latest['obv'] > prev['obv']}"
     }
 
-    # 4. Fibonacci Key Levels
-    fib_score = 0
+    # 4. Directional S/R & Confluence (Fibonacci + Williams Fractal Pivots)
+    sr_score = 0
+    detail_notes = []
+
+    recent_res, recent_sup = fetch_recent_pivots(df)
     golden_pocket = fibs['0.618 (Golden Pocket)']
     mid_point = fibs['0.500 (Mid Point)']
-    dist_0618 = abs(price - golden_pocket) / price
-    dist_0500 = abs(price - mid_point) / price
 
-    if dist_0618 < 0.015 or dist_0500 < 0.015:
-        fib_score = 15  
-    elif dist_0618 < 0.03:
-        fib_score = 10
-    breakdown['Fibonacci Key Levels'] = {
-        'score': fib_score, 'max': 15,
-        'detail': f"Distance to Golden Pocket (0.618): {dist_0618*100:.2f}%"
+    # Identify closest support below or at price
+    valid_supports = [s for s in (recent_sup + [golden_pocket, mid_point]) if s <= price * 1.005]
+    closest_sup = max(valid_supports) if valid_supports else None
+
+    # Identify closest resistance above or at price
+    valid_resistances = [r for r in (recent_res + [fibs['0.000 (Swing High)']]) if r >= price * 0.995]
+    closest_res = min(valid_resistances) if valid_resistances else None
+
+    # Calculate proximity percentages
+    dist_to_sup = ((price - closest_sup) / price) if closest_sup else 1.0
+    dist_to_res = ((closest_res - price) / price) if closest_res else 1.0
+
+    # Bullish Support Reaction Points
+    if dist_to_sup <= 0.015:
+        sr_score += 10
+        detail_notes.append("Holding Key Support (<=1.5%)")
+    elif dist_to_sup <= 0.03:
+        sr_score += 5
+        detail_notes.append("Near Support Zone (<=3%)")
+
+    # Bearish Resistance Penalty (buying into overhead resistance)
+    if dist_to_res <= 0.015:
+        sr_score -= 10
+        detail_notes.append("Testing Heavy Resistance (<=1.5%)")
+    elif dist_to_res <= 0.03:
+        sr_score -= 5
+        detail_notes.append("Approaching Resistance (<=3%)")
+
+    # Confluence Bonus: Check if Fibonacci Golden/Mid level overlaps with a Williams Fractal Pivot
+    has_confluence = False
+    for fib_lvl in [golden_pocket, mid_point]:
+        for piv in (recent_sup + recent_res):
+            if abs(fib_lvl - piv) / fib_lvl <= 0.015:  # Within 1.5% overlap
+                has_confluence = True
+                break
+
+    if has_confluence:
+        sr_score += 5
+        detail_notes.append("⭐ Golden Fib + Pivot Overlap")
+
+    final_sr_score = max(-15, min(15, sr_score))
+    sr_detail_text = " | ".join(detail_notes) if detail_notes else "Mid-range trading (No immediate S/R bounce)"
+
+    breakdown['Key S/R & Confluence'] = {
+        'score': final_sr_score, 'max': 15,
+        'detail': sr_detail_text
     }
 
     # 5. Derivatives Setup
@@ -553,7 +593,7 @@ if matching_markets:
 
     active_market = st.session_state['active_market']
 
-    # --- FEATURE 1: Selected Market Banner ---
+    # --- Selected Market Banner ---
     st.markdown(
         f"""
         <div class="selected-market-banner">
@@ -564,7 +604,7 @@ if matching_markets:
         unsafe_allow_html=True
     )
 
-    # --- FEATURE 2: Recent Selections Quick-Switch Pills ---
+    # --- Recent Selections Quick-Switch Pills ---
     recent_list = st.session_state['recent_markets']
     if len(recent_list) > 1:
         st.markdown("**🕒 Recent Selections:**")
@@ -668,7 +708,7 @@ if matching_markets:
             st.subheader("6-Layer Setup Strength Breakdown")
             st.caption(
                 "**What is Setup Strength?** Instead of relying on a single indicator, "
-                "we analyze 6 separate market layers (Trend, Momentum, Volume, Fibonacci levels, "
+                "we analyze 6 separate market layers (Trend, Momentum, Volume, Directional S/R Confluence, "
                 "Derivatives, and Sentiment). The higher the score out of 100, the more indicators agree on the move."
             )
             st.progress(max(0, min(100, int((score + 100) / 2))))
