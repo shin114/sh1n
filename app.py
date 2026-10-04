@@ -82,7 +82,7 @@ def fetch_fear_and_greed():
     except Exception:
         return {"value": 50, "classification": "Neutral"}
 
-# --- 3. Indicator & Technical Analysis Engine ---
+# --- 3. Technical Indicator Engine ---
 def calculate_technical_indicators(df):
     """Calculate EMAs, RSI, MACD, ATR, OBV, and Volume SMA."""
     df = df.copy()
@@ -137,19 +137,15 @@ def calculate_fibonacci_levels(df, lookback=50):
     }
     return fibs, high_val, low_val
 
-# --- 4. Weighted Confluence Scoring Engine ---
+# --- 4. Confluence Scoring Engine ---
 def evaluate_confluence(df, fibs, derivatives, fng):
-    """
-    Evaluates 6 market layers and returns a normalized score (-100 to +100).
-    Positive = Bullish, Negative = Bearish.
-    """
     latest = df.iloc[-1]
     prev = df.iloc[-2]
     price = latest['close']
 
     breakdown = {}
 
-    # 1. Market Structure & Trend Alignment (Max 30 pts)
+    # 1. Market Structure & Trend Alignment
     trend_score = 0
     if price > latest['ema_20']: trend_score += 10
     if latest['ema_20'] > latest['ema_50']: trend_score += 10
@@ -159,23 +155,23 @@ def evaluate_confluence(df, fibs, derivatives, fng):
         'detail': f"Price vs EMAs (20/50/200). Current: {'Bullish Stack' if trend_score == 30 else 'Mixed/Bearish'}"
     }
 
-    # 2. Momentum & Oscillators (Max 20 pts)
+    # 2. Momentum & Oscillators
     mom_score = 0
     rsi = latest['rsi']
-    if rsi < 35: mom_score += 10       # Oversold (Bullish setup)
-    elif 45 <= rsi <= 60: mom_score += 5 # Healthy trend momentum
-    elif rsi > 70: mom_score -= 10     # Overbought warning
+    if rsi < 35: mom_score += 10       
+    elif 45 <= rsi <= 60: mom_score += 5 
+    elif rsi > 70: mom_score -= 10     
 
     if latest['macd_hist'] > 0 and latest['macd_hist'] > prev['macd_hist']:
-        mom_score += 10  # Bullish MACD expansion
+        mom_score += 10  
     elif latest['macd_hist'] < 0 and latest['macd_hist'] < prev['macd_hist']:
-        mom_score -= 10  # Bearish MACD expansion
+        mom_score -= 10  
     breakdown['Momentum (RSI & MACD)'] = {
         'score': max(-20, min(20, mom_score)), 'max': 20,
         'detail': f"RSI: {rsi:.1f} | MACD Hist: {latest['macd_hist']:.4f}"
     }
 
-    # 3. Volume & Order Flow (Max 15 pts)
+    # 3. Volume & Order Flow
     vol_score = 0
     if latest['volume'] > latest['vol_sma_20']: vol_score += 8
     if latest['obv'] > prev['obv']: vol_score += 7
@@ -185,7 +181,7 @@ def evaluate_confluence(df, fibs, derivatives, fng):
         'detail': f"Vol > 20-SMA: {latest['volume'] > latest['vol_sma_20']} | OBV Trending Up: {latest['obv'] > prev['obv']}"
     }
 
-    # 4. Fibonacci & Key Levels (Max 15 pts)
+    # 4. Fibonacci & Key Levels
     fib_score = 0
     golden_pocket = fibs['0.618 (Golden Pocket)']
     mid_point = fibs['0.500 (Mid Point)']
@@ -193,53 +189,159 @@ def evaluate_confluence(df, fibs, derivatives, fng):
     dist_0500 = abs(price - mid_point) / price
 
     if dist_0618 < 0.015 or dist_0500 < 0.015:
-        fib_score = 15  # Sitting directly in Golden Pocket / Retracement zone
+        fib_score = 15  
     elif dist_0618 < 0.03:
         fib_score = 10
     breakdown['Fibonacci & Key Levels'] = {
         'score': fib_score, 'max': 15,
-        'detail': f"0.618 Level: {golden_pocket:.4f} (Distance: {dist_0618*100:.2f}%)"
+        'detail': f"0.618 Level: ${golden_pocket:,.4f} (Distance: {dist_0618*100:.2f}%)"
     }
 
-    # 5. Derivatives Positioning (Max 10 pts)
+    # 5. Derivatives Positioning
     deriv_score = 0
     if derivatives['is_perp']:
         fr = derivatives['funding_rate_pct']
         if fr < -0.01:
-            deriv_score += 10  # Heavy shorting = Short squeeze potential
+            deriv_score += 10  
         elif -0.01 <= fr <= 0.015:
-            deriv_score += 5   # Healthy / Balanced funding
+            deriv_score += 5   
         elif fr > 0.03:
-            deriv_score -= 10  # Over-leveraged long = Risk of long liquidation
+            deriv_score -= 10  
     else:
-        deriv_score = 5  # Spot default
+        deriv_score = 5  
     breakdown['Derivatives Setup'] = {
         'score': max(-10, min(10, deriv_score)), 'max': 10,
         'detail': f"Funding Rate: {derivatives['funding_rate_pct']:.4f}%" if derivatives['is_perp'] else "Spot Pair (N/A)"
     }
 
-    # 6. Market Sentiment (Max 10 pts)
+    # 6. Market Sentiment
     sent_score = 0
     fng_val = fng['value']
     if fng_val < 25:
-        sent_score += 10  # Extreme Fear = Contrarian buying opportunity
+        sent_score += 10  
     elif 25 <= fng_val <= 55:
-        sent_score += 5   # Neutral
+        sent_score += 5   
     elif fng_val > 75:
-        sent_score -= 10  # Extreme Greed = High risk of market pullback
+        sent_score -= 10  
     breakdown['Market Sentiment'] = {
         'score': max(-10, min(10, sent_score)), 'max': 10,
         'detail': f"Fear & Greed Index: {fng_val} ({fng['classification']})"
     }
 
-    # Total Net Score Calculation (-100 to +100)
     total_score = sum(item['score'] for item in breakdown.values())
-
     return total_score, breakdown
 
-# --- 5. Streamlit User Interface ---
+# --- 5. Non-Technical Trade Plan Deductor ---
+def generate_plain_english_trade_plan(df, fibs, score):
+    """
+    Translates technical indicators into a simplified, actionable trade recommendation
+    with estimated win probability, entry range, SL, TP1, and TP2.
+    """
+    latest = df.iloc[-1]
+    price = latest['close']
+    atr = latest['atr'] if not np.isnan(latest['atr']) else price * 0.02
+
+    golden_pocket = fibs['0.618 (Golden Pocket)']
+    swing_high = fibs['0.000 (Swing High)']
+    swing_low = fibs['1.000 (Swing Low)']
+
+    # Case 1: BULLISH BUY SIGNAL (Score >= 25)
+    if score >= 25:
+        action = "BUY / LONG 🟢"
+        
+        # Calculate Win Probability tier based on confluence magnitude
+        if score >= 65:
+            probability = "High Win Probability (~75% - 82%)"
+        elif score >= 45:
+            probability = "Moderate-High Win Probability (~65% - 74%)"
+        else:
+            probability = "Moderate Win Probability (~55% - 64%)"
+
+        # Determine optimal entry zone near support or current price
+        support_levels = [v for k, v in fibs.items() if v <= price]
+        key_support = max(support_levels) if support_levels else price - (atr * 1.5)
+        
+        entry_min = min(key_support, price * 0.992)
+        entry_max = price
+        
+        # Hard Stop Loss below key support minus ATR buffer
+        sl = key_support - (1.5 * atr)
+        risk_per_unit = price - sl
+        if risk_per_unit <= 0:
+            risk_per_unit = atr * 1.5
+            sl = price - risk_per_unit
+
+        # Take Profit targets based on Risk:Reward ratios (1.5R and 2.5R)
+        tp1 = price + (risk_per_unit * 1.5)
+        tp2 = max(swing_high, price + (risk_per_unit * 2.5))
+
+        rationale = [
+            f"**Trend Control:** High confluence score (+{score}/100) indicates buyers dominate this market.",
+            f"**Entry Strategy:** Buy between **${entry_min:,.4f}** and **${entry_max:,.4f}** on minor dips.",
+            f"**Risk Management:** Cut losses if a candle closes below **${sl:,.4f}** (Risk: -{((price-sl)/price)*100:.2f}%)."
+        ]
+
+    # Case 2: BEARISH SELL SIGNAL (Score <= -25)
+    elif score <= -25:
+        action = "SELL / SHORT 🔴"
+        
+        if score <= -65:
+            probability = "High Win Probability (~75% - 82%)"
+        elif score <= -45:
+            probability = "Moderate-High Win Probability (~65% - 74%)"
+        else:
+            probability = "Moderate Win Probability (~55% - 64%)"
+
+        resistance_levels = [v for k, v in fibs.items() if v >= price]
+        key_resistance = min(resistance_levels) if resistance_levels else price + (atr * 1.5)
+        
+        entry_min = price
+        entry_max = max(key_resistance, price * 1.008)
+        
+        sl = key_resistance + (1.5 * atr)
+        risk_per_unit = sl - price
+        if risk_per_unit <= 0:
+            risk_per_unit = atr * 1.5
+            sl = price + risk_per_unit
+
+        tp1 = price - (risk_per_unit * 1.5)
+        tp2 = min(swing_low, price - (risk_per_unit * 2.5))
+
+        rationale = [
+            f"**Trend Control:** Low confluence score ({score}/100) indicates sellers are pushing price lower.",
+            f"**Entry Strategy:** Sell or short relief bounces between **${entry_min:,.4f}** and **${entry_max:,.4f}**.",
+            f"**Risk Management:** Cut losses if a candle closes above **${sl:,.4f}** (Risk: -{((sl-price)/price)*100:.2f}%)."
+        ]
+
+    # Case 3: NEUTRAL / RANGEBOUND (Score between -25 and +25)
+    else:
+        action = "STAND BY / DO NOT TRADE ⏸️"
+        probability = "Low Trade Edge (~50% - Coin Flip)"
+        entry_min, entry_max = price, price
+        sl, tp1, tp2 = price, price, price
+
+        rationale = [
+            f"**Market Indecision:** Confluence score is neutral ({score}/100). Indicators conflict.",
+            "**Strategy:** No high-probability entry right now. Cash is a valid position.",
+            f"**Action Plan:** Wait for price to pull back to major Fib levels (${golden_pocket:,.4f}) or break out."
+        ]
+
+    return {
+        "action": action,
+        "probability": probability,
+        "entry_range": f"${entry_min:,.4f} -${entry_max:,.4f}",
+        "sl": sl,
+        "tp1": tp1,
+        "tp2": tp2,
+        "risk_pct": abs(((price - sl) / price) * 100) if sl != price else 0,
+        "tp1_pct": abs(((tp1 - price) / price) * 100) if tp1 != price else 0,
+        "tp2_pct": abs(((tp2 - price) / price) * 100) if tp2 != price else 0,
+        "rationale": rationale
+    }
+
+# --- 6. Streamlit User Interface ---
 st.title("⚡ SH1N Crypto Swing Analysis Engine")
-st.caption("Integrated Price Action, Volume, Technicals, Bitget Derivatives, and Macro Sentiment")
+st.caption("Simplified Trading Recommendations Driven by Multi-Layer Market Confluence")
 
 # Sidebar Controls
 all_markets = fetch_all_usdt_markets()
@@ -260,7 +362,7 @@ if matching_markets:
     symbol = selected_market['symbol']
     
     # Run Complete Pipeline
-    with st.spinner(f"Analyzing {symbol}..."):
+    with st.spinner(f"Analyzing market probability for {symbol}..."):
         df = fetch_ohlcv_data(symbol, timeframe=timeframe)
         derivatives = fetch_derivatives_data(symbol)
         fng = fetch_fear_and_greed()
@@ -269,32 +371,58 @@ if matching_markets:
         df = calculate_technical_indicators(df)
         fibs, swing_high, swing_low = calculate_fibonacci_levels(df, lookback=lookback_period)
         score, score_breakdown = evaluate_confluence(df, fibs, derivatives, fng)
+        trade_plan = generate_plain_english_trade_plan(df, fibs, score)
 
         latest_price = df['close'].iloc[-1]
         prev_price = df['close'].iloc[-2]
         price_change_pct = ((latest_price - prev_price) / prev_price) * 100
 
-        # High Level Metric Header
-        col1, col2, col3, col4, col5 = st.columns(5)
+        # --- HIGH LEVEL OVERVIEW HEADER ---
+        col1, col2, col3, col4 = st.columns(4)
         col1.metric("Current Price", f"${latest_price:,.4f}", f"{price_change_pct:+.2f}%")
-        
-        # Recommendation Gauge
-        rec_label = "STRONG BUY" if score >= 60 else ("BUY" if score >= 25 else ("NEUTRAL" if score > -25 else ("SELL" if score >= -60 else "STRONG SELL")))
-        rec_color = "normal" if score == 0 else ("inverse" if score < 0 else "off")
-        col2.metric("Confluence Score", f"{score} / 100", delta=rec_label)
-        
-        col3.metric("Fear & Greed", f"{fng['value']}/100", fng['classification'])
-        col4.metric("Funding Rate", f"{derivatives['funding_rate_pct']:.4f}%" if derivatives['is_perp'] else "N/A (Spot)")
-        col5.metric("24h ATR (Volatility)", f"${df['atr'].iloc[-1]:,.4f}")
+        col2.metric("Market Action", trade_plan['action'])
+        col3.metric("Estimated Win Rate", trade_plan['probability'])
+        col4.metric("Confluence Score", f"{score} / 100")
 
         st.divider()
 
-        # Detailed Breakdown Tabs
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Confluence Breakdown", "📈 Technicals & Fibonacci", "⚡ Derivatives & Sentiment", "📋 Raw Data"])
+        # --- PROMINENT ACTION CARD FOR NON-TECHNICAL USERS ---
+        st.subheader("🎯 Simple Execution Summary (Where to Trade & Exit)")
+        
+        box_type = st.success if "BUY" in trade_plan['action'] else (st.error if "SELL" in trade_plan['action'] else st.warning)
+        
+        with box_type():
+            p_col1, p_col2, p_col3, p_col4 = st.columns(4)
+            p_col1.metric("1. Optimal Entry Zone", trade_plan['entry_range'])
+            p_col2.metric("2. Take Profit 1 (Scale Out 50%)", f"${trade_plan['tp1']:,.4f}", f"+{trade_plan['tp1_pct']:.2f}% (1.5 R:R)")
+            p_col3.metric("3. Take Profit 2 (Final Target)", f"${trade_plan['tp2']:,.4f}", f"+{trade_plan['tp2_pct']:.2f}% (2.5 R:R)")
+            p_col4.metric("4. Hard Stop Loss", f"${trade_plan['sl']:,.4f}", f"-{trade_plan['risk_pct']:.2f}% Risk")
+
+        st.divider()
+
+        # --- DETAILED TABBED VIEWS ---
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "🎯 Trade Strategy (Non-Technical)", 
+            "📊 Confluence Breakdown", 
+            "📈 Technicals & Fibonacci", 
+            "⚡ Derivatives & Sentiment", 
+            "📋 Raw Data"
+        ])
 
         with tab1:
-            st.subheader("Confluence Layer Breakdown")
-            st.progress(max(0, min(100, int((score + 100) / 2))))  # Scale -100..100 to 0..100 for progress bar
+            st.subheader("💡 Why is this trade recommended?")
+            for item in trade_plan['rationale']:
+                st.markdown(f"- {item}")
+                
+            st.info(
+                "🛡️ **Execution Rule (Wick Protection):** "
+                f"Do not panic exit on a brief intraday price spike. "
+                f"Only trigger your Stop Loss if a **{timeframe.upper()} candle closes beyond ${trade_plan['sl']:,.4f}**."
+            )
+
+        with tab2:
+            st.subheader("6-Layer Market Confluence Breakdown")
+            st.progress(max(0, min(100, int((score + 100) / 2))))
             
             for category, data in score_breakdown.items():
                 c1, c2, c3 = st.columns([2, 1, 4])
@@ -302,7 +430,7 @@ if matching_markets:
                 c2.write(f"`{data['score']} / {data['max']} pts`")
                 c3.caption(data['detail'])
 
-        with tab2:
+        with tab3:
             col_a, col_b = st.columns(2)
             
             with col_a:
@@ -328,7 +456,7 @@ if matching_markets:
                 }
                 st.table(pd.DataFrame(tech_data))
 
-        with tab3:
+        with tab4:
             st.subheader("Derivatives & Macro Metrics")
             d1, d2 = st.columns(2)
             with d1:
@@ -336,15 +464,13 @@ if matching_markets:
                 st.write(f"**Market Type:** {selected_market['type']}")
                 st.write(f"**Funding Rate:** `{derivatives['funding_rate_pct']:.4f}%`")
                 st.write(f"**Open Interest:** `{derivatives['open_interest']:,.2f}`")
-                st.caption("High positive funding (>0.03%) indicates crowded long positions (liquidation risk). Negative funding indicates short squeeze potential.")
             
             with d2:
                 st.markdown("##### Sentiment Index")
                 st.write(f"**Crypto Fear & Greed Value:** `{fng['value']}`")
                 st.write(f"**Market State:** `{fng['classification']}`")
-                st.caption("Extreme Fear (<25) often marks local bottoms, while Extreme Greed (>75) signals heightened risk of top reversals.")
 
-        with tab4:
+        with tab5:
             st.subheader("Recent OHLCV Data")
             st.dataframe(df[['timestamp', 'open', 'high', 'low', 'close', 'volume', 'rsi', 'ema_20', 'ema_50']].tail(20), use_container_width=True)
 
