@@ -12,6 +12,22 @@ st.set_page_config(
     layout="centered"  # Enforces portrait proportions on desktop
 )
 
+# --- Developer Mode & Branding Visibility ---
+# Append ?dev=true to your app URL to reveal Streamlit header & dev tools
+is_dev_mode = st.query_params.get("dev", ["false"])[0].lower() == "true" if isinstance(st.query_params.get("dev"), list) else st.query_params.get("dev", "false").lower() == "true"
+
+if not is_dev_mode:
+    st.markdown("""
+        <style>
+        #MainMenu {visibility: hidden;}
+        header {visibility: hidden;}
+        footer {visibility: hidden;}
+        div[data-testid="stToolbar"] {visibility: hidden !important;}
+        div[data-testid="stDecoration"] {visibility: hidden !important;}
+        div[data-testid="stStatusWidget"] {visibility: hidden !important;}
+        </style>
+    """, unsafe_allow_html=True)
+
 # --- Best Practice Constants ---
 DEFAULT_FIB_LOOKBACK = 100
 
@@ -449,7 +465,7 @@ def generate_plain_english_trade_plan(df, fibs, score):
 
 # --- 6. User Interface & State Initialization ---
 
-# Initialize Session State for Recent Selections and Active Symbol
+# Initialize Session State
 if 'recent_markets' not in st.session_state:
     st.session_state['recent_markets'] = []
 
@@ -463,13 +479,13 @@ st.caption("Simplified Trading Signals Driven by Multi-Layer Market Analysis")
 # Fetch Markets
 all_markets = fetch_all_usdt_markets()
 
-# Sidebar Controls
+# Sidebar Market Selection Inputs
+st.sidebar.header("Market Selection")
 search_query = st.sidebar.text_input(
     "Search Ticker / Pair:", 
     value=st.session_state.get('search_query_val', 'GRT')
 ).strip().upper()
 
-# Sync typed search back to state
 st.session_state['search_query_val'] = search_query
 
 timeframe = st.sidebar.selectbox(
@@ -487,37 +503,36 @@ matching_markets = [
 if matching_markets:
     labels = [m['label'] for m in matching_markets]
     
-    # Pre-select matching market if fast-switched via recent buttons
-    default_idx = 0
-    if 'active_symbol' in st.session_state:
-        for idx, m in enumerate(matching_markets):
-            if m['symbol'] == st.session_state['active_symbol']:
-                default_idx = idx
-                break
+    # Selected label from dropdown
+    selected_label = st.sidebar.selectbox("Select Available Market:", labels)
+    pending_market = next(m for m in matching_markets if m['label'] == selected_label)
 
-    selected_label = st.sidebar.selectbox("Select Available Market:", labels, index=default_idx)
-    selected_market = next(m for m in matching_markets if m['label'] == selected_label)
-    symbol = selected_market['symbol']
-    
-    # Store active selection
-    st.session_state['active_symbol'] = symbol
+    # Manual Trigger Button to run analysis
+    analyze_click = st.sidebar.button("🚀 Analyze Market", type="primary", use_container_width=True)
 
-    # Update Recent Selections (Deduplicated, newest first, max 5)
-    recent = [m for m in st.session_state['recent_markets'] if m['symbol'] != selected_market['symbol']]
-    recent.insert(0, {
-        'symbol': selected_market['symbol'],
-        'label': selected_market['label'],
-        'base': selected_market['base'],
-        'type': selected_market['type']
-    })
-    st.session_state['recent_markets'] = recent[:5]
+    # Initial boot default
+    if 'active_market' not in st.session_state:
+        st.session_state['active_market'] = pending_market
+        # Store in recent on initial boot
+        st.session_state['recent_markets'] = [pending_market]
 
-    # --- FEATURE 1: Selected Market Banner (Visible on Mobile without Sidebar) ---
+    # Trigger analysis ONLY on explicit button click
+    if analyze_click:
+        st.session_state['active_market'] = pending_market
+        
+        # Add to recent markets (deduplicated, max 5)
+        recent = [m for m in st.session_state['recent_markets'] if m['symbol'] != pending_market['symbol']]
+        recent.insert(0, pending_market)
+        st.session_state['recent_markets'] = recent[:5]
+
+    active_market = st.session_state['active_market']
+
+    # --- FEATURE 1: Selected Market Banner ---
     st.markdown(
         f"""
         <div class="selected-market-banner">
-            <span style="color: #94a3b8; font-size: 0.82rem; font-weight: 600; text-transform: uppercase;">Selected Market</span><br/>
-            <span style="font-size: 1.15rem; font-weight: 700; color: #f8fafc;">📍 {selected_market['label']}</span>
+            <span style="color: #94a3b8; font-size: 0.82rem; font-weight: 600; text-transform: uppercase;">Currently Analyzing</span><br/>
+            <span style="font-size: 1.15rem; font-weight: 700; color: #f8fafc;">📍 {active_market['label']}</span>
         </div>
         """,
         unsafe_allow_html=True
@@ -529,23 +544,24 @@ if matching_markets:
         st.markdown("**🕒 Recent Selections:**")
         rec_cols = st.columns(len(recent_list))
         for idx, r_m in enumerate(recent_list):
-            is_active = (r_m['symbol'] == selected_market['symbol'])
+            is_active = (r_m['symbol'] == active_market['symbol'])
             btn_label = f"● {r_m['base']}" if is_active else r_m['base']
             
-            # Clicking a recent pill switches active symbol immediately
+            # Clicking a recent pill triggers immediate switch
             if rec_cols[idx].button(
                 btn_label, 
                 key=f"rec_btn_{r_m['symbol']}_{idx}", 
                 disabled=is_active, 
                 use_container_width=True
             ):
-                st.session_state['active_symbol'] = r_m['symbol']
+                st.session_state['active_market'] = r_m
                 st.session_state['search_query_val'] = r_m['base']
                 st.rerun()
 
     st.write("")  # Spacing divider
 
     # --- Fetch Data & Process Analysis ---
+    symbol = active_market['symbol']
     with st.spinner(f"Evaluating market probability for {symbol}..."):
         df = fetch_ohlcv_data(symbol, timeframe=timeframe)
         derivatives = fetch_derivatives_data(symbol)
@@ -668,7 +684,7 @@ if matching_markets:
             d1, d2 = st.columns(2)
             with d1:
                 st.markdown("##### Bitget Futures Data")
-                st.write(f"**Market Type:** {selected_market['type']}")
+                st.write(f"**Market Type:** {active_market['type']}")
                 st.write(f"**Funding Rate:** `{derivatives['funding_rate_pct']:.4f}%`")
                 st.write(f"**Open Interest:** `{derivatives['open_interest']:,.2f}`")
             
