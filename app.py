@@ -9,7 +9,8 @@ import time
 st.set_page_config(
     page_title="SH1N",
     page_icon="⚡",
-    layout="centered"  # Enforces portrait proportions on desktop
+    layout="centered",  # Enforces portrait proportions on desktop
+    initial_sidebar_state="expanded"  # Ensures sidebar starts open on load
 )
 
 # --- Developer Mode & Branding Visibility ---
@@ -19,12 +20,32 @@ is_dev_mode = st.query_params.get("dev", ["false"])[0].lower() == "true" if isin
 if not is_dev_mode:
     st.markdown("""
         <style>
-        #MainMenu {visibility: hidden;}
-        footer {visibility: hidden;}
-        header {background: transparent !important;}
-        div[data-testid="stToolbar"] {visibility: hidden !important;}
-        div[data-testid="stDecoration"] {visibility: hidden !important;}
-        div[data-testid="stStatusWidget"] {visibility: hidden !important;}
+        /* 1. Keep top header transparent and elevated so sidebar toggle stays interactive */
+        header[data-testid="stHeader"], [data-testid="stHeader"] {
+            background: transparent !important;
+            z-index: 100000 !important;
+        }
+
+        /* 2. Explicitly keep sidebar expand/collapse arrows visible */
+        [data-testid="stSidebarCollapsedControl"],
+        [data-testid="stSidebarCollapsedControl"] button,
+        [data-testid="stSidebarCollapseButton"],
+        button[aria-label*="sidebar"],
+        button[aria-label*="Sidebar"] {
+            visibility: visible !important;
+            display: inline-flex !important;
+            opacity: 1 !important;
+        }
+
+        /* 3. Target and hide strictly top-right dev menu, status, and footer */
+        [data-testid="stToolbar"],
+        [data-testid="stDecoration"],
+        [data-testid="stStatusWidget"],
+        #MainMenu,
+        footer {
+            visibility: hidden !important;
+            display: none !important;
+        }
         </style>
     """, unsafe_allow_html=True)
 
