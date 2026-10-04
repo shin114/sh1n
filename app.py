@@ -20,8 +20,8 @@ if not is_dev_mode:
     st.markdown("""
         <style>
         #MainMenu {visibility: hidden;}
-        header {visibility: hidden;}
         footer {visibility: hidden;}
+        header {background: transparent !important;}
         div[data-testid="stToolbar"] {visibility: hidden !important;}
         div[data-testid="stDecoration"] {visibility: hidden !important;}
         div[data-testid="stStatusWidget"] {visibility: hidden !important;}
@@ -35,7 +35,7 @@ DEFAULT_FIB_LOOKBACK = 100
 def format_price(val):
     """
     Dynamically format prices based on order of magnitude.
-    Uses escaped dollar signs (\\$) to prevent Streamlit from treating
+    Uses escaped dollar signs (\$) to prevent Streamlit from treating
     price pairs as LaTeX math formulas.
     """
     if val is None or np.isnan(val):
