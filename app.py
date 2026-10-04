@@ -109,6 +109,16 @@ st.markdown("""
         font-size: clamp(0.75rem, 2.5vw, 0.88rem) !important;
         padding: 6px 10px !important;
     }
+
+    /* 7. Selected Market Callout Banner Styling */
+    .selected-market-banner {
+        background-color: #1e293b;
+        border-left: 4px solid #3b82f6;
+        padding: 8px 12px;
+        border-radius: 6px;
+        margin-top: 8px;
+        margin-bottom: 12px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -437,35 +447,105 @@ def generate_plain_english_trade_plan(df, fibs, score):
         "rationale": rationale
     }
 
-# --- 6. User Interface ---
+# --- 6. User Interface & State Initialization ---
+
+# Initialize Session State for Recent Selections and Active Symbol
+if 'recent_markets' not in st.session_state:
+    st.session_state['recent_markets'] = []
+
+if 'search_query_val' not in st.session_state:
+    st.session_state['search_query_val'] = "GRT"
+
+# Main Title & Description
 st.title("⚡ SH1N Swing Analysis Engine")
 st.caption("Simplified Trading Signals Driven by Multi-Layer Market Analysis")
 
-# Sidebar Controls
+# Fetch Markets
 all_markets = fetch_all_usdt_markets()
 
-# Default Ticker = GRT
-search_query = st.sidebar.text_input("Search Ticker / Pair:", value="GRT").strip().upper()
+# Sidebar Controls
+search_query = st.sidebar.text_input(
+    "Search Ticker / Pair:", 
+    value=st.session_state.get('search_query_val', 'GRT')
+).strip().upper()
 
-# Default Timeframe = 4h
+# Sync typed search back to state
+st.session_state['search_query_val'] = search_query
+
 timeframe = st.sidebar.selectbox(
     "Select Timeframe:", 
     options=['15m', '1h', '4h', '1d'], 
     index=2
 )
 
-# Prefix Search Filter (grt* wildcard style)
+# Filter matching markets
 matching_markets = [
     m for m in all_markets 
     if m['base'].startswith(search_query) or m['symbol'].startswith(search_query)
 ]
 
 if matching_markets:
-    selected_label = st.sidebar.selectbox("Select Available Market:", [m['label'] for m in matching_markets])
+    labels = [m['label'] for m in matching_markets]
+    
+    # Pre-select matching market if fast-switched via recent buttons
+    default_idx = 0
+    if 'active_symbol' in st.session_state:
+        for idx, m in enumerate(matching_markets):
+            if m['symbol'] == st.session_state['active_symbol']:
+                default_idx = idx
+                break
+
+    selected_label = st.sidebar.selectbox("Select Available Market:", labels, index=default_idx)
     selected_market = next(m for m in matching_markets if m['label'] == selected_label)
     symbol = selected_market['symbol']
     
-    # Fetch Data & Process
+    # Store active selection
+    st.session_state['active_symbol'] = symbol
+
+    # Update Recent Selections (Deduplicated, newest first, max 5)
+    recent = [m for m in st.session_state['recent_markets'] if m['symbol'] != selected_market['symbol']]
+    recent.insert(0, {
+        'symbol': selected_market['symbol'],
+        'label': selected_market['label'],
+        'base': selected_market['base'],
+        'type': selected_market['type']
+    })
+    st.session_state['recent_markets'] = recent[:5]
+
+    # --- FEATURE 1: Selected Market Banner (Visible on Mobile without Sidebar) ---
+    st.markdown(
+        f"""
+        <div class="selected-market-banner">
+            <span style="color: #94a3b8; font-size: 0.82rem; font-weight: 600; text-transform: uppercase;">Selected Market</span><br/>
+            <span style="font-size: 1.15rem; font-weight: 700; color: #f8fafc;">📍 {selected_market['label']}</span>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    # --- FEATURE 2: Recent Selections Quick-Switch Pills ---
+    recent_list = st.session_state['recent_markets']
+    if len(recent_list) > 1:
+        st.markdown("**🕒 Recent Selections:**")
+        rec_cols = st.columns(len(recent_list))
+        for idx, r_m in enumerate(recent_list):
+            is_active = (r_m['symbol'] == selected_market['symbol'])
+            btn_label = f"● {r_m['base']}" if is_active else r_m['base']
+            
+            # Clicking a recent pill switches active symbol immediately
+            if rec_cols[idx].button(
+                btn_label, 
+                key=f"rec_btn_{r_m['symbol']}_{idx}", 
+                disabled=is_active, 
+                use_container_width=True
+            ):
+                st.session_state['active_symbol'] = r_m['symbol']
+                st.session_state['search_query_val'] = r_m['base']
+                st.rerun()
+
+    st.write("")  # Spacing divider
+
+    # --- Fetch Data & Process Analysis ---
     with st.spinner(f"Evaluating market probability for {symbol}..."):
         df = fetch_ohlcv_data(symbol, timeframe=timeframe)
         derivatives = fetch_derivatives_data(symbol)
