@@ -4,10 +4,11 @@ import pandas as pd
 import numpy as np
 import requests
 import time
+import json
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(
-    page_title="SH1N Spot Dip Catcher",
+    page_title="SH1N Spot Dip Catcher v4",
     page_icon="🎯",
     layout="centered",
     initial_sidebar_state="expanded"
@@ -15,28 +16,29 @@ st.set_page_config(
 
 # --- Developer Mode & Branding Visibility ---
 # Append ?dev=true to your app URL to reveal Streamlit header & dev tools
-is_dev_mode = st.query_params.get("dev", ["false"])[0].lower() == "true" if isinstance(st.query_params.get("dev"), list) else st.query_params.get("dev", "false").lower() == "true"
+is_dev_mode = (
+    st.query_params.get("dev", ["false"])[0].lower() == "true"
+    if isinstance(st.query_params.get("dev"), list)
+    else st.query_params.get("dev", "false").lower() == "true"
+)
 
 if not is_dev_mode:
     st.markdown("""
         <style>
-        /* 1. Keep top header transparent without collapsing its flexbox container */
         header[data-testid="stHeader"], [data-testid="stHeader"] {
             background: transparent !important;
         }
-
-        /* 2. Hide ONLY top-right menu actions, status widget, decoration, and footer */
         [data-testid="stHeaderActionElements"],
         [data-testid="stToolbarActionElements"],
         [data-testid="stStatusWidget"],
         [data-testid="stDecoration"],
+        [data-testid="stViewerBadge"],
+        a[href*="github.com"],
         #MainMenu,
         footer {
             visibility: hidden !important;
             display: none !important;
         }
-
-        /* 3. Preserve sidebar toggle arrow (expand/collapse controls) */
         [data-testid="stSidebarCollapsedControl"],
         [data-testid="stSidebarCollapseButton"] {
             visibility: visible !important;
@@ -44,8 +46,6 @@ if not is_dev_mode:
             opacity: 1 !important;
             z-index: 999999 !important;
         }
-
-        /* Ensure the collapsed icon button retains pointer interactions */
         [data-testid="stSidebarCollapsedControl"] button {
             visibility: visible !important;
             display: inline-flex !important;
@@ -53,14 +53,22 @@ if not is_dev_mode:
         </style>
     """, unsafe_allow_html=True)
 
-# --- Best Practice Constants ---
+# --- Constants ---
 DEFAULT_FIB_LOOKBACK = 100
+MIN_BARS = 220
+TIMEFRAME_MS = {
+    "5m": 5 * 60 * 1000,
+    "15m": 15 * 60 * 1000,
+    "1h": 60 * 60 * 1000,
+    "4h": 4 * 60 * 60 * 1000,
+    "1d": 24 * 60 * 60 * 1000,
+}
 
 # --- Helper Functions: Dynamic Precision Formatting ---
 def format_price(val):
     """
     Dynamically format prices based on order of magnitude.
-    Uses escaped dollar signs (\$) to prevent Streamlit from treating
+    Uses escaped dollar signs to prevent Streamlit from treating
     price pairs as LaTeX math formulas.
     """
     if val is None or np.isnan(val):
@@ -95,7 +103,6 @@ def format_decimal(val, default_dp=4):
 # --- Responsive CSS & Typography Styling ---
 st.markdown("""
     <style>
-    /* 1. Constrain container width for optimal portrait readability */
     .main .block-container {
         max-width: 680px !important;
         padding-top: 1.5rem !important;
@@ -103,13 +110,10 @@ st.markdown("""
         padding-left: 1rem !important;
         padding-right: 1rem !important;
     }
-
-    /* 2. Fluid Headers */
     h1 { font-size: clamp(1.4rem, 5vw, 2.1rem) !important; font-weight: 700 !important; }
     h2 { font-size: clamp(1.2rem, 4vw, 1.6rem) !important; font-weight: 600 !important; }
     h3 { font-size: clamp(1.05rem, 3.2vw, 1.3rem) !important; font-weight: 600 !important; }
 
-    /* 3. Metric Value Adjustments - Full visibility without clipping */
     [data-testid="stMetricValue"] {
         font-size: clamp(0.95rem, 3.6vw, 1.30rem) !important;
         font-weight: 700 !important;
@@ -122,7 +126,6 @@ st.markdown("""
         color: #64748b !important;
     }
 
-    /* 4. Column Padding & Responsive Spacing */
     @media (max-width: 640px) {
         [data-testid="stHorizontalBlock"] {
             flex-wrap: wrap !important;
@@ -135,13 +138,11 @@ st.markdown("""
         }
     }
 
-    /* 5. Safe Text Wrapping */
     p, li, div, span {
         overflow-wrap: break-word !important;
         word-break: break-word !important;
     }
 
-    /* 6. Mobile-friendly Tab Scroll */
     .stTabs [data-baseweb="tab-list"] {
         gap: 4px;
         overflow-x: auto;
@@ -151,7 +152,6 @@ st.markdown("""
         padding: 6px 10px !important;
     }
 
-    /* 7. Selected Market Callout Banner Styling */
     .selected-market-banner {
         background-color: #1e293b;
         border-left: 4px solid #10b981;
@@ -170,40 +170,62 @@ exchange = ccxt.bitget({
 })
 
 # --- 2. Data Fetching Utilities ---
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_all_usdt_markets():
     """Fetch active Bitget USDT Spot markets."""
     try:
         markets = exchange.load_markets()
         market_list = []
         for symbol, market in markets.items():
-            if market.get('active', True) and market.get('quote') == 'USDT' and market.get('spot'):
+            if (
+                market.get('active', True)
+                and market.get('quote') == 'USDT'
+                and market.get('spot')
+                and market.get('base') != 'USDT'
+            ):
                 market_list.append({
                     'symbol': symbol,
                     'base': market['base'],
                     'type': 'Spot',
                     'label': f"{symbol} (Spot)"
                 })
-        return market_list
+        return sorted(market_list, key=lambda x: x['symbol'])
     except Exception as e:
         st.error(f"Error loading Bitget spot markets: {e}")
         return []
 
-@st.cache_data(ttl=300)
-def fetch_ohlcv_data(symbol, timeframe='4h', limit=150):
-    """Fetch candlestick OHLCV data."""
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_spot_tickers_snapshot():
+    """Fetch spot tickers for liquidity, spread, and volatility pre-filtering."""
+    try:
+        return exchange.fetch_tickers()
+    except Exception:
+        return {}
+
+@st.cache_data(ttl=90, show_spinner=False)
+def fetch_ohlcv_data(symbol, timeframe='15m', limit=260):
+    """Fetch closed candlestick OHLCV data (excludes live unclosed candle)."""
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        if not ohlcv:
+            return pd.DataFrame()
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        return df
-    except Exception as e:
-        st.error(f"Error fetching OHLCV data for {symbol}: {e}")
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+
+        now_ms = exchange.milliseconds()
+        duration = TIMEFRAME_MS[timeframe]
+        if len(df) and int(df['timestamp'].iloc[-1].timestamp() * 1000) + duration > now_ms:
+            df = df.iloc[:-1].copy()
+
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        return df.dropna(subset=['open', 'high', 'low', 'close', 'volume']).reset_index(drop=True)
+    except Exception:
         return pd.DataFrame()
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=900, show_spinner=False)
 def fetch_fear_and_greed():
-    """Fetch global Crypto Fear & Greed Index."""
+    """Fetch global Crypto Fear & Greed Index (context only)."""
     try:
         res = requests.get("https://api.alternative.me/fng/", timeout=5).json()
         data = res['data'][0]
@@ -212,44 +234,91 @@ def fetch_fear_and_greed():
             "classification": data['value_classification']
         }
     except Exception:
-        return {"value": 50, "classification": "Neutral"}
+        return {"value": None, "classification": "Unavailable"}
 
-# --- 3. Technical Indicator Engine ---
+
+# --- 3. Technical Indicator Engine (Wilder Smoothing) ---
 def calculate_technical_indicators(df):
-    """Calculate EMAs, RSI, MACD, ATR, OBV, and Volume SMA."""
+    """Calculate EMAs, Wilder RSI, MACD, Wilder ATR, OBV, and Relative Volume."""
     df = df.copy()
-    
-    # EMAs
-    df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
-    df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
-    df['ema_200'] = df['close'].ewm(span=200, adjust=False).mean()
+    close = df['close']
+    high = df['high']
+    low = df['low']
+    volume = df['volume']
 
-    # RSI (14)
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / (loss + 1e-10)
+    for period in (20, 50, 200):
+        df[f'ema_{period}'] = close.ewm(span=period, adjust=False, min_periods=period).mean()
+
+    # Wilder RSI (14)
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+    avg_loss = loss.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
     df['rsi'] = 100 - (100 / (1 + rs))
+    df.loc[(avg_loss == 0) & (avg_gain > 0), 'rsi'] = 100
+    df.loc[(avg_gain == 0) & (avg_loss > 0), 'rsi'] = 0
 
     # MACD (12, 26, 9)
-    ema_12 = df['close'].ewm(span=12, adjust=False).mean()
-    ema_26 = df['close'].ewm(span=26, adjust=False).mean()
+    ema_12 = close.ewm(span=12, adjust=False).mean()
+    ema_26 = close.ewm(span=26, adjust=False).mean()
     df['macd'] = ema_12 - ema_26
     df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
     df['macd_hist'] = df['macd'] - df['macd_signal']
 
-    # ATR (14)
-    high_low = df['high'] - df['low']
-    high_close = np.abs(df['high'] - df['close'].shift())
-    low_close = np.abs(df['low'] - df['close'].shift())
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    df['atr'] = tr.rolling(window=14).mean()
+    # Wilder ATR (14)
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [(high - low), (high - prev_close).abs(), (low - prev_close).abs()],
+        axis=1
+    ).max(axis=1)
+    df['atr'] = tr.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+    df['atr_pct'] = (df['atr'] / close) * 100
 
-    # Volume Indicators
-    df['vol_sma_20'] = df['volume'].rolling(window=20).mean()
-    df['obv'] = (np.sign(df['close'].diff()) * df['volume']).fillna(0).cumsum()
+    # Volume & OBV
+    df['vol_sma_20'] = volume.rolling(window=20, min_periods=20).mean()
+    df['relative_volume'] = volume / df['vol_sma_20'].replace(0, np.nan)
+    df['obv'] = (np.sign(close.diff()).fillna(0) * volume).cumsum()
+    df['obv_ema_20'] = df['obv'].ewm(span=20, adjust=False).mean()
+
+    # Candle Anatomy & Previous Values
+    candle_range = (high - low).replace(0, np.nan)
+    df['close_location'] = (close - low) / candle_range
+    df['green'] = close > df['open']
+    df['prior_high'] = high.shift(1)
+    df['rsi_prev'] = df['rsi'].shift(1)
+    df['macd_hist_prev'] = df['macd_hist'].shift(1)
 
     return df
+
+def fetch_confirmed_pivots(df, right=2):
+    """
+    Identifies confirmed 5-candle Williams Fractal swing highs & lows.
+    Enforces a `right`-bar confirmation delay so unconfirmed pivots are excluded.
+    """
+    if len(df) < 5:
+        return [], []
+
+    highs = df['high']
+    lows = df['low']
+
+    is_pivot_high = (
+        (highs > highs.shift(1)) & (highs > highs.shift(2)) &
+        (highs > highs.shift(-1)) & (highs > highs.shift(-2))
+    )
+    is_pivot_low = (
+        (lows < lows.shift(1)) & (lows < lows.shift(2)) &
+        (lows < lows.shift(-1)) & (lows < lows.shift(-2))
+    )
+
+    if len(df) > right:
+        is_pivot_high.iloc[-right:] = False
+        is_pivot_low.iloc[-right:] = False
+
+    recent_res = df.loc[is_pivot_high, 'high'].dropna().tail(6).tolist()
+    recent_sup = df.loc[is_pivot_low, 'low'].dropna().tail(6).tolist()
+    return recent_res, recent_sup
 
 def calculate_fibonacci_levels(df, lookback=DEFAULT_FIB_LOOKBACK):
     """Calculate swing highs, lows, and Fibonacci retracements."""
@@ -269,339 +338,451 @@ def calculate_fibonacci_levels(df, lookback=DEFAULT_FIB_LOOKBACK):
     }
     return fibs, high_val, low_val
 
-def fetch_recent_pivots(df):
-    """
-    Identifies recent major local swing highs (Resistance) and swing lows (Support)
-    using standard 5-candle Williams Fractal patterns.
-    """
-    if len(df) < 5:
-        return [], []
-        
-    highs = df['high']
-    lows = df['low']
-    
-    is_pivot_high = (
-        (highs > highs.shift(1)) & (highs > highs.shift(2)) &
-        (highs > highs.shift(-1)) & (highs > highs.shift(-2))
+def get_trend_state(df):
+    """Determine trend state using EMA 50/200 alignment and slope."""
+    if df is None or len(df) < 10:
+        return "UNAVAILABLE", False
+    last = df.iloc[-1]
+    if pd.isna(last['ema_200']) or pd.isna(last['ema_50']):
+        return "INSUFFICIENT", False
+
+    bullish = (
+        last['close'] > last['ema_200']
+        and last['ema_50'] > last['ema_200']
+        and last['ema_50'] >= df['ema_50'].iloc[-4]
     )
-    
-    is_pivot_low = (
-        (lows < lows.shift(1)) & (lows < lows.shift(2)) &
-        (lows < lows.shift(-1)) & (lows < lows.shift(-2))
+    bearish = (
+        last['close'] < last['ema_200']
+        and last['ema_50'] < last['ema_200']
+        and last['ema_50'] < df['ema_50'].iloc[-4]
     )
-    
-    recent_res = df[is_pivot_high]['high'].dropna().tail(3).tolist()
-    recent_sup = df[is_pivot_low]['low'].dropna().tail(3).tolist()
-    
-    return recent_res, recent_sup
+    if bullish:
+        return "BULLISH", True
+    if bearish:
+        return "BEARISH", False
+    return "MIXED", False
 
-# --- 4. Spot Dip Scoring Engine (0 to 100) ---
-def evaluate_dip_confluence(df, fibs, fng):
+
+# --- 4. Three-Layer Intraday Dip Engine (15m Primary + 4H/1H + Optional 5m) ---
+def evaluate_intraday_dip_setup(
+    m15_df, h1_df, h4_df, btc_df, fibs, fee_per_side_pct, m5_df=None
+):
     """
-    Evaluates Spot dip-buying quality on a 0-100 scale:
-    1. Trend Health (EMAs) - avoids buying into broken downtrends
-    2. Pullback / Dip Momentum (RSI & MACD) - rewards cooled RSI & turning MACD
-    3. Volume & Accumulation (Volume SMA & OBV) - checks real demand/absorption
-    4. Support & Resistance Confluence (Fibs + Williams Fractals)
-    5. Market Sentiment (Fear & Greed) - favors fear/pullbacks over greed spikes
+    Three-Layer Scalp-to-Swing Dip Catcher:
+    1. Mandatory Filters: Avoid broken 4H+1H downtrends or sharp BTC 4H selloffs.
+    2. Entry Confirmation: Pullback near support/EMA + bullish price action & momentum recovery.
+    3. Supporting Evidence: 15m RSI (35-50 recovery zone), MACD histogram, relative volume, OBV.
     """
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
-    price = latest['close']
+    e = m15_df.iloc[-1]
+    price = float(e['close'])
+    atr = float(e['atr']) if pd.notna(e['atr']) and e['atr'] > 0 else price * 0.015
+    atr = max(atr, price * 0.0015)
 
-    breakdown = {}
+    trend4h, trend4h_ok = get_trend_state(h4_df)
+    trend1h, trend1h_ok = get_trend_state(h1_df)
+    btc_trend, btc_ok = get_trend_state(btc_df)
 
-    # 1. Trend & Structure Health (Max 25 pts)
-    trend_score = 0
-    trend_notes = []
-    if len(df) >= 200 and not np.isnan(latest['ema_200']):
-        if price >= latest['ema_200']:
-            trend_score += 10
-            trend_notes.append("Above 200 EMA")
-        else:
-            trend_notes.append("Below 200 EMA")
-    if latest['ema_20'] >= latest['ema_50']:
-        trend_score += 8
-        trend_notes.append("20>50 EMA")
-    if price >= latest['ema_50'] * 0.97:
-        trend_score += 7
-        trend_notes.append("Holding near/above 50 EMA")
-
-    breakdown['Trend Health'] = {
-        'score': trend_score, 'max': 25,
-        'detail': " | ".join(trend_notes) if trend_notes else "Evaluating trend"
-    }
-
-    # 2. Dip Cool-Off & Reversal Momentum (Max 25 pts)
-    mom_score = 0
-    rsi = latest['rsi']
-    if 28 <= rsi <= 45:
-        mom_score += 15
-        rsi_state = f"Dip Zone (RSI {rsi:.1f})"
-    elif rsi < 28:
-        mom_score += 12
-        rsi_state = f"Deep Oversold (RSI {rsi:.1f})"
-    elif 45 < rsi <= 55:
-        mom_score += 8
-        rsi_state = f"Mild Pullback (RSI {rsi:.1f})"
-    elif rsi > 70:
-        mom_score -= 5
-        rsi_state = f"Overbought/Extended (RSI {rsi:.1f})"
-    else:
-        rsi_state = f"Mid RSI ({rsi:.1f})"
-
-    if latest['macd_hist'] > prev['macd_hist']:
-        mom_score += 10
-        macd_state = "MACD Hist Rising"
-    elif latest['macd_hist'] > 0:
-        mom_score += 5
-        macd_state = "MACD Hist Positive"
-    else:
-        macd_state = "MACD Hist Falling"
-
-    breakdown['Dip Momentum'] = {
-        'score': max(0, min(25, mom_score)), 'max': 25,
-        'detail': f"{rsi_state} | {macd_state}"
-    }
-
-    # 3. Volume & Order Flow Absorption (Max 15 pts)
-    vol_score = 0
-    vol_spike = latest['volume'] > latest['vol_sma_20']
-    obv_rising = latest['obv'] > prev['obv']
-    if vol_spike and obv_rising:
-        vol_score += 10
-    elif vol_spike or obv_rising:
-        vol_score += 6
-    if latest['obv'] >= df['obv'].tail(5).min():
-        vol_score += 5
-
-    breakdown['Volume & OBV'] = {
-        'score': min(15, vol_score), 'max': 15,
-        'detail': f"Vol>20SMA: {vol_spike} | OBV Up: {obv_rising}"
-    }
-
-    # 4. Support Proximity & Fib/Pivot Confluence (Max 20 pts)
-    sr_score = 0
-    sr_notes = []
-    recent_res, recent_sup = fetch_recent_pivots(df)
+    recent_res, recent_sup = fetch_confirmed_pivots(m15_df)
     golden_pocket = fibs['0.618 (Golden Pocket)']
     mid_point = fibs['0.500 (Mid Point)']
     fib_0786 = fibs['0.786']
 
-    support_candidates = [s for s in (recent_sup + [golden_pocket, mid_point, fib_0786]) if s <= price * 1.005]
-    closest_sup = max(support_candidates) if support_candidates else None
-    dist_to_sup = ((price - closest_sup) / price) if (closest_sup and closest_sup > 0) else 1.0
+    # Classify levels strictly by their position relative to the current price.
+    # A level above price is resistance, never support (and vice versa).
+    support_candidates = [float(x) for x in recent_sup if pd.notna(x) and 0 < float(x) < price]
+    for lvl in (golden_pocket, mid_point, fib_0786, e['ema_20'], e['ema_50']):
+        if pd.notna(lvl) and 0 < float(lvl) < price:
+            support_candidates.append(float(lvl))
+    supports = sorted(set(support_candidates), reverse=True)
 
-    if dist_to_sup <= 0.015:
-        sr_score += 15
-        sr_notes.append(f"At Support ({dist_to_sup*100:.2f}%)")
-    elif dist_to_sup <= 0.035:
-        sr_score += 10
-        sr_notes.append(f"Near Support ({dist_to_sup*100:.2f}%)")
-    else:
-        sr_notes.append(f"Support {dist_to_sup*100:.2f}% below")
+    resistance_candidates = [float(x) for x in recent_res if pd.notna(x) and float(x) > price]
+    for lvl in (fibs['0.382'], fibs['0.236'], fibs['0.000 (Swing High)']):
+        if pd.notna(lvl) and float(lvl) > price:
+            resistance_candidates.append(float(lvl))
+    resistances = sorted(set(resistance_candidates))
 
-    # Overlap bonus between Fibonacci pullback levels and Williams Fractal pivots
-    has_overlap = False
-    for fib_lvl in [golden_pocket, mid_point, fib_0786]:
-        for piv in (recent_sup + recent_res):
-            if piv > 0 and abs(fib_lvl - piv) / fib_lvl <= 0.015:
-                has_overlap = True
-                break
-    if has_overlap:
-        sr_score += 5
-        sr_notes.append("⭐ Fib+Pivot Confluence")
+    nearest_support = supports[0] if supports else price - (1.5 * atr)
+    nearest_resistance = resistances[0] if resistances else price + (1.8 * atr)
+    support_dist_pct = max(0.0, ((price - nearest_support) / price) * 100)
 
-    breakdown['Support Confluence'] = {
-        'score': min(20, sr_score), 'max': 20,
-        'detail': " | ".join(sr_notes)
+    # Pullback context on 15m (not chasing green breakouts)
+    near_ema20 = pd.notna(e['ema_20']) and abs(price - float(e['ema_20'])) / price <= 0.016
+    near_ema50 = pd.notna(e['ema_50']) and abs(price - float(e['ema_50'])) / price <= 0.022
+    near_support = support_dist_pct <= 2.0
+    pullback_ok = near_ema20 or near_ema50 or near_support
+
+    # Momentum & price action confirmation
+    rsi_val = float(e['rsi']) if pd.notna(e['rsi']) else 50.0
+    rsi_prev = float(e['rsi_prev']) if pd.notna(e['rsi_prev']) else rsi_val
+    rsi_recovery_sweet = (35.0 <= rsi_val <= 52.0) and (rsi_val > rsi_prev)
+    rsi_bounce_broader = (28.0 <= rsi_val <= 58.0) and (rsi_val > rsi_prev)
+
+    bullish_reclaim = bool(e['green'] and price > float(e['prior_high']))
+    strong_green_close = bool(e['green'] and pd.notna(e['close_location']) and float(e['close_location']) >= 0.60)
+    macd_improving = (
+        pd.notna(e['macd_hist'])
+        and pd.notna(e['macd_hist_prev'])
+        and float(e['macd_hist']) > float(e['macd_hist_prev'])
+    )
+    rel_vol = float(e['relative_volume']) if pd.notna(e['relative_volume']) else 1.0
+    vol_ok = rel_vol >= 0.95
+    obv_ok = bool(e['obv'] > e['obv_ema_20'])
+
+    # Optional 5m fine-tuning check
+    m5_note = "Off"
+    m5_bonus = 0
+    if m5_df is not None and len(m5_df) >= 20:
+        m5_last = m5_df.iloc[-1]
+        m5_green_bounce = bool(m5_last['green'] and pd.notna(m5_last['rsi']) and float(m5_last['rsi']) >= float(m5_df['rsi'].iloc[-2]))
+        if m5_green_bounce:
+            m5_note = "5m Bullish Bounce"
+            m5_bonus = 4
+        else:
+            m5_note = "5m Cooling/Mixed"
+
+    has_overlap = any(
+        piv > 0 and abs(fib_lvl - piv) / fib_lvl <= 0.012
+        for fib_lvl in (golden_pocket, mid_point, fib_0786)
+        for piv in (recent_sup + recent_res)
+    )
+
+    breakdown = {
+        "4H & 1H Trend Filter": {
+            "score": (12 if trend4h_ok else (5 if trend4h == "MIXED" else 0)) + (10 if trend1h_ok else (4 if trend1h == "MIXED" else 0)),
+            "max": 22,
+            "detail": f"4H: {trend4h} | 1H: {trend1h}"
+        },
+        "15m Pullback & S/R": {
+            "score": min(18, (14 if pullback_ok else 0) + (4 if has_overlap else 0)),
+            "max": 18,
+            "detail": f"Sup {support_dist_pct:.2f}% below" + (" | Fib+Pivot" if has_overlap else "")
+        },
+        "15m RSI Recovery (35-58)": {
+            "score": 16 if rsi_recovery_sweet else (10 if rsi_bounce_broader else 0),
+            "max": 16,
+            "detail": f"RSI {rsi_val:.1f} (prev {rsi_prev:.1f})"
+        },
+        "15m Price & MACD Reversal": {
+            "score": (11 if bullish_reclaim else (7 if strong_green_close else 0)) + (8 if macd_improving else 0),
+            "max": 19,
+            "detail": f"{'Reclaimed prior high' if bullish_reclaim else ('Green bounce' if strong_green_close else 'No reclaim')} | MACD {'up' if macd_improving else 'flat/down'}"
+        },
+        "Rel. Volume & OBV": {
+            "score": (6 if vol_ok else 0) + (6 if obv_ok else 0),
+            "max": 12,
+            "detail": f"RelVol {rel_vol:.2f}x | OBV {'>' if obv_ok else '<='} EMA20"
+        },
+        "BTC 4H & 5m Timing": {
+            "score": (5 if btc_ok else (2 if btc_trend == "MIXED" else 0)) + m5_bonus,
+            "max": 9,
+            "detail": f"BTC 4H: {btc_trend} | {m5_note}"
+        },
     }
 
-    # 5. Market Sentiment / Fear (Max 15 pts)
-    sent_score = 0
-    fng_val = fng['value']
-    if fng_val < 30:
-        sent_score += 15
-    elif fng_val <= 50:
-        sent_score += 10
-    elif fng_val <= 65:
-        sent_score += 5
-    else:
-        sent_score += 2
+    raw_score = sum(item["score"] for item in breakdown.values())
+    raw_score_max = sum(item["max"] for item in breakdown.values())
+    score = int(round((raw_score / raw_score_max) * 100)) if raw_score_max else 0
 
-    breakdown['Market Fear'] = {
-        'score': sent_score, 'max': 15,
-        'detail': f"Fear & Greed: {fng_val} ({fng['classification']})"
-    }
+    # Dynamic ATR + intraday swing stop & targets
+    stop = min(nearest_support - (0.55 * atr), price - (1.1 * atr))
+    if stop <= 0 or stop >= price:
+        stop = price - (1.3 * atr)
 
-    total_score = sum(item['score'] for item in breakdown.values())
-    return max(0, min(100, int(total_score))), breakdown
-
-# --- 5. Spot Dip & Resistance Sell Target Generator ---
-def generate_spot_dip_plan(df, fibs, score):
-    """
-    Builds a Spot dip-buying zone and overhead resistance sell targets (TP1, TP2)
-    plus a structural invalidation level (SL).
-    """
-    latest = df.iloc[-1]
-    price = latest['close']
-    atr = latest['atr'] if not np.isnan(latest['atr']) and latest['atr'] > 0 else price * 0.02
-
-    recent_res, recent_sup = fetch_recent_pivots(df)
-    golden_pocket = fibs['0.618 (Golden Pocket)']
-    mid_point = fibs['0.500 (Mid Point)']
-    swing_high = fibs['0.000 (Swing High)']
-    fib_0382 = fibs['0.382']
-    fib_0236 = fibs['0.236']
-
-    # Support candidates below or slightly above current price for dip entry
-    supports_below = sorted([s for s in (recent_sup + [fibs['0.786'], golden_pocket, mid_point]) if s <= price * 1.003])
-    key_support = supports_below[-1] if supports_below else max(price - (1.5 * atr), price * 0.95)
-
-    # Overhead resistance candidates above current price for selling into strength
-    resistances_above = sorted([r for r in (recent_res + [fib_0382, fib_0236, swing_high]) if r > price * 1.005])
-    tp1 = resistances_above[0] if resistances_above else price + (2.0 * atr)
-    if len(resistances_above) > 1:
-        tp2 = resistances_above[1]
-    else:
-        tp2 = max(swing_high, tp1 * 1.04) if swing_high > tp1 * 1.01 else tp1 * 1.05
-
-    # Ensure TP2 is strictly above TP1
+    # Use the nearest overhead resistance for TP1; use the next level or ATR extension for TP2.
+    tp1 = nearest_resistance
+    tp2 = resistances[1] if len(resistances) > 1 else max(tp1 + (0.8 * atr), price + (2.9 * atr))
     if tp2 <= tp1:
-        tp2 = tp1 * 1.04
+        tp2 = tp1 + (0.8 * atr)
 
-    # Structural invalidation below nearest support with ATR cushion
-    sl = min(key_support - (1.2 * atr), price * 0.90) if key_support < price else price - (2.0 * atr)
-    if sl >= price:
-        sl = price * 0.95
+    fee = fee_per_side_pct / 100.0
+    entry = price
+    entry_cost_per_unit = entry * (1.0 + fee)
+    stop_proceeds_per_unit = stop * (1.0 - fee)
+    risk_per_unit_net = max(0.0, entry_cost_per_unit - stop_proceeds_per_unit)
+    tp1_profit_per_unit_net = (tp1 * (1.0 - fee)) - entry_cost_per_unit
+    tp2_profit_per_unit_net = (tp2 * (1.0 - fee)) - entry_cost_per_unit
+    risk_pct = (risk_per_unit_net / entry_cost_per_unit) * 100.0 if entry_cost_per_unit > 0 else 0.0
+    tp1_net_pct = (tp1_profit_per_unit_net / entry_cost_per_unit) * 100.0 if entry_cost_per_unit > 0 else 0.0
+    tp2_net_pct = (tp2_profit_per_unit_net / entry_cost_per_unit) * 100.0 if entry_cost_per_unit > 0 else 0.0
+    net_r_multiple = (tp1_profit_per_unit_net / risk_per_unit_net) if risk_per_unit_net > 0 else 0.0
 
-    if score >= 60:
+    # Layer 1 (Mandatory) + Layer 2 (Confirmation) + Layer 3 (Supporting)
+    broken_macro = (trend4h == "BEARISH" and trend1h == "BEARISH")
+    btc_risk_off = (btc_trend == "BEARISH") and (score < 58)
+    # A reclaim is useful, but still require at least one independent momentum recovery signal.
+    momentum_recovering = rsi_bounce_broader or macd_improving
+    entry_confirmed = pullback_ok and momentum_recovering and (
+        bullish_reclaim or strong_green_close
+    )
+
+    if btc_risk_off:
+        state = "Waiting"
+        action = "WAIT — BTC 4H WEAK 🛑"
+        reason = "BTC 4H is bearish and setup score is under 58; wait for stronger dip alignment."
+    elif broken_macro:
+        state = "Waiting"
+        action = "WAIT — BEARISH HTF ⏸️"
+        reason = "Both 4H and 1H are bearish; avoid catching an unconfirmed falling knife."
+    elif entry_confirmed and score >= 60 and net_r_multiple >= 1.25:
+        state = "Confirmed"
         action = "BUY DIP 🟢"
-        confidence = "High Dip Setup (~72%-82%)"
-        entry_min = min(key_support, price * 0.992)
-        entry_max = price
-        rationale = [
-            f"**Dip Quality:** Score is **{score}/100**, showing solid dip alignment across trend, pullback momentum, and support.",
-            f"**Dip Entry Zone:** Accumulate spot bids between **{format_price(entry_min)}** and **{format_price(entry_max)}**.",
-            f"**Resistance Sell Plan:** Trim/sell into overhead resistance candidates at **{format_price(tp1)}** (TP1) and **{format_price(tp2)}** (TP2); invalidation below **{format_price(sl)}**."
-        ]
-    elif score >= 40:
-        action = "SCALE / DCA DIP 🟡"
-        confidence = "Moderate Dip Setup (~58%-70%)"
-        entry_min = min(key_support, price * 0.985)
-        entry_max = price * 0.998
-        rationale = [
-            f"**Partial Alignment:** Score is **{score}/100**—decent pullback structure, best suited for smaller staggered spot buys.",
-            f"**Staggered Bids:** Look for pullbacks toward **{format_price(entry_min)} - {format_price(entry_max)}** rather than chasing green candles.",
-            f"**Sell Targets:** Overhead resistance candidates sit near **{format_price(tp1)}** and **{format_price(tp2)}** (invalidation: **{format_price(sl)}**)."
-        ]
+        reason = f"Confirmed 15m dip setup ({score}/100) with {net_r_multiple:.2f}R net upside to TP1."
+    elif pullback_ok and score >= 43:
+        state = "Watch"
+        action = "WATCH / SCALE DIP 🟡"
+        reason = "In pullback zone—watch for a bullish 15m close/reclaim or scale cautiously."
     else:
+        state = "Waiting"
         action = "WAIT FOR DIP ⏸️"
-        confidence = "Low Edge / Wait (~50%)"
-        entry_min = min(key_support, golden_pocket) if min(key_support, golden_pocket) < price else price * 0.97
-        entry_max = key_support if key_support < price else price * 0.985
-        rationale = [
-            f"**Not Ready Yet:** Score is **{score}/100**—either price is too extended/overbought or lacks clean support confluence.",
-            f"**Patient Bid Zone:** Wait for price to dip closer to **{format_price(entry_min)} - {format_price(entry_max)}** instead of buying right now.",
-            f"**Overhead Targets (Once Filled):** Resistance candidates are around **{format_price(tp1)}** and **{format_price(tp2)}**."
-        ]
+        reason = "Awaiting cleaner pullback proximity or 15m momentum recovery."
 
-    dip_depth_pct = abs(((entry_min - price) / price) * 100) if price > 0 else 0
-    tp1_pct = abs(((tp1 - price) / price) * 100) if price > 0 else 0
-    tp2_pct = abs(((tp2 - price) / price) * 100) if price > 0 else 0
-    sl_pct = abs(((price - sl) / price) * 100) if price > 0 else 0
+    entry_min = min(nearest_support, price * 0.995) if nearest_support < price else price * 0.993
+    entry_max = price
 
     return {
+        "state": state,
+        "score": score,
+        "breakdown": breakdown,
         "action": action,
-        "confidence": confidence,
-        "entry_range": f"{format_price(entry_min)} - {format_price(entry_max)}",
+        "reason": reason,
+        "price": price,
+        "atr_pct": float(e['atr_pct']) if pd.notna(e['atr_pct']) else np.nan,
+        "rsi": rsi_val,
+        "trend4h": trend4h,
+        "trend1h": trend1h,
+        "btc_trend": btc_trend,
+        "m5_note": m5_note,
+        "nearest_support": nearest_support,
+        "nearest_resistance": nearest_resistance,
+        "support_dist_pct": support_dist_pct,
         "entry_min": entry_min,
         "entry_max": entry_max,
-        "dip_depth_pct": dip_depth_pct,
-        "sl": sl,
-        "sl_pct": sl_pct,
+        "entry_range": f"{format_price(entry_min)} - {format_price(entry_max)}",
+        "stop": stop,
+        "risk_pct": risk_pct,
         "tp1": tp1,
-        "tp1_pct": tp1_pct,
+        "tp1_net_pct": tp1_net_pct,
         "tp2": tp2,
-        "tp2_pct": tp2_pct,
-        "rationale": rationale
+        "tp2_net_pct": tp2_net_pct,
+        "net_r_multiple": net_r_multiple,
+        "supports": supports[:6],
+        "resistances": resistances[:6],
     }
 
-# --- 6. User Interface & State Initialization ---
+@st.cache_data(ttl=120, show_spinner=False)
+def run_market_dip_scanner(max_coins=25, min_quote_vol=500_000.0, max_spread_pct=0.35, fee_side_pct=0.10):
+    """
+    Scans top liquid Bitget USDT spot pairs for 15m dip setups.
+    Filters out low liquidity, wide spreads, and extreme single-bar volatility spikes.
+    """
+    markets = fetch_all_usdt_markets()
+    tickers = fetch_spot_tickers_snapshot()
+    if not markets:
+        return []
 
-# Initialize Session State
+    candidates = []
+    for m in markets:
+        sym = m['symbol']
+        t = tickers.get(sym, {}) if tickers else {}
+        quote_vol = float(t.get('quoteVolume') or 0.0)
+        bid = t.get('bid')
+        ask = t.get('ask')
+        last = t.get('last') or t.get('close')
+
+        spread_pct = 0.0
+        if bid and ask and bid > 0 and ask >= bid:
+            spread_pct = ((ask - bid) / bid) * 100.0
+
+        # Reject missing market-quality data instead of treating it as zero spread / valid liquidity.
+        if not tickers or quote_vol <= 0 or quote_vol < min_quote_vol:
+            continue
+        if bid is None or ask is None or float(bid or 0) <= 0 or float(ask or 0) < float(bid or 0):
+            continue
+        if spread_pct <= 0 or spread_pct > max_spread_pct:
+            continue
+
+        candidates.append({
+            "symbol": sym,
+            "base": m['base'],
+            "label": m['label'],
+            "quote_vol": quote_vol,
+            "spread_pct": spread_pct,
+            "last": last,
+        })
+
+    # Prioritize highest 24h USDT volume pairs (always include BTC/USDT if present)
+    candidates.sort(key=lambda x: x["quote_vol"], reverse=True)
+    selected_batch = candidates[:max_coins]
+    if not any(c["symbol"] == "BTC/USDT" for c in selected_batch):
+        btc_match = next((c for c in candidates if c["symbol"] == "BTC/USDT"), None)
+        if btc_match:
+            selected_batch = [btc_match] + selected_batch[:max(0, max_coins - 1)]
+
+    raw_btc = fetch_ohlcv_data("BTC/USDT", timeframe="4h", limit=240)
+    btc_df = calculate_technical_indicators(raw_btc) if len(raw_btc) >= MIN_BARS else None
+
+    scan_results = []
+    for item in selected_batch:
+        sym = item["symbol"]
+        m15_raw = fetch_ohlcv_data(sym, timeframe="15m", limit=240)
+        if len(m15_raw) < MIN_BARS:
+            continue
+        h1_raw = fetch_ohlcv_data(sym, timeframe="1h", limit=240)
+        h4_raw = fetch_ohlcv_data(sym, timeframe="4h", limit=240)
+        if len(h1_raw) < MIN_BARS or len(h4_raw) < MIN_BARS:
+            continue
+
+        m15_df = calculate_technical_indicators(m15_raw)
+        # Exclude extreme volatility spikes (> 8% 15m ATR)
+        if pd.notna(m15_df['atr_pct'].iloc[-1]) and float(m15_df['atr_pct'].iloc[-1]) > 8.0:
+            continue
+
+        h1_df = calculate_technical_indicators(h1_raw)
+        h4_df = calculate_technical_indicators(h4_raw)
+        fibs, _, _ = calculate_fibonacci_levels(m15_df, lookback=DEFAULT_FIB_LOOKBACK)
+        eval_res = evaluate_intraday_dip_setup(m15_df, h1_df, h4_df, btc_df, fibs, fee_side_pct)
+
+        scan_results.append({
+            "symbol": sym,
+            "base": item["base"],
+            "label": item["label"],
+            "candle_ts": m15_df['timestamp'].iloc[-1].strftime('%Y-%m-%d %H:%M UTC'),
+            "score": eval_res["score"],
+            "state": eval_res["state"],
+            "action": eval_res["action"],
+            "price": eval_res["price"],
+            "tp1": eval_res["tp1"],
+            "stop": eval_res["stop"],
+            "rr": eval_res["net_r_multiple"],
+            "rsi": eval_res["rsi"],
+            "quote_vol": item["quote_vol"],
+            "spread_pct": item["spread_pct"],
+        })
+
+    rank_order = {"Confirmed": 0, "Watch": 1, "Waiting": 2}
+    scan_results.sort(key=lambda x: (rank_order.get(x["state"], 9), -x["score"]))
+    return scan_results
+
+
+# --- 5. User Interface & State Initialization ---
+POSITIONS_FILE = "sh1n_spot_open_positions.json"
+
+def load_saved_positions():
+    try:
+        with open(POSITIONS_FILE, "r", encoding="utf-8") as file:
+            data = json.load(file)
+        return data if isinstance(data, list) else []
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return []
+
+def save_positions(positions):
+    try:
+        with open(POSITIONS_FILE, "w", encoding="utf-8") as file:
+            json.dump(positions, file, indent=2)
+        return True
+    except OSError:
+        return False
+
 if 'recent_markets' not in st.session_state:
     st.session_state['recent_markets'] = []
-
 if 'search_query_val' not in st.session_state:
-    st.session_state['search_query_val'] = "GRT"
+    st.session_state['search_query_val'] = "SOL"
+if 'signal_log' not in st.session_state:
+    st.session_state['signal_log'] = []
+if 'open_positions' not in st.session_state:
+    st.session_state['open_positions'] = load_saved_positions()
 
-# Main Title & Description
-st.title("🎯 SH1N Spot Dip Catcher")
-st.caption("Spot Accumulation Engine: Catch Dips into Support & Sell into Resistance")
+st.title("🎯 SH1N Spot Dip Catcher v4")
+st.caption("15m Spot Setups · 1H/4H Trend Context · Scalp-to-Swing · Bitget USDT Spot")
+st.caption("Scores rank setup confluence; they are not win probabilities. Always verify spread, fees, and order-book conditions before entry.")
 
-# Fetch Markets
 all_markets = fetch_all_usdt_markets()
 
-# Sidebar Market Selection Inputs
-st.sidebar.header("Spot Market Selection")
+# Sidebar Controls
+st.sidebar.header("Spot Market & Scanner")
 search_query = st.sidebar.text_input(
-    "Search Ticker / Pair:", 
-    value=st.session_state.get('search_query_val', 'GRT')
+    "Search Ticker / Pair:",
+    value=st.session_state.get('search_query_val', 'SOL')
 ).strip().upper()
-
 st.session_state['search_query_val'] = search_query
 
-timeframe = st.sidebar.selectbox(
-    "Select Timeframe:", 
-    options=['15m', '1h', '4h', '1d'], 
-    index=2
+use_5m_refine = st.sidebar.checkbox(
+    "Enable optional 5m timing check",
+    value=True,
+    help="Checks the latest closed 5m candle for finer dip entry confirmation."
 )
 
-# Filter matching markets (prefix match)
+max_risk_pct = st.sidebar.slider(
+    "Max Risk per Trade (%)",
+    min_value=0.25,
+    max_value=2.0,
+    value=1.0,
+    step=0.25,
+    help="Target 0.5%-1% risk per spot trade across 2-3 max concurrent positions."
+)
+
+alloc_usdt = st.sidebar.number_input(
+    "Planned Allocation (USDT)",
+    min_value=1.0,
+    value=100.0,
+    step=1.0,
+    key="spot_alloc_usdt"
+)
+
+account_equity_usdt = st.sidebar.number_input(
+    "Total Spot Account Equity (USDT)",
+    min_value=1.0,
+    value=4000.0,
+    step=1.0,
+    help="Used only to calculate the risk budget. Enter your actual available spot account value."
+)
+
+fee_side_pct = st.sidebar.number_input(
+    "Fee Per Side (%)",
+    min_value=0.0,
+    max_value=2.0,
+    value=0.10,
+    step=0.01,
+    key="spot_side_fee"
+)
+
 matching_markets = [
-    m for m in all_markets 
+    m for m in all_markets
     if m['base'].startswith(search_query) or m['symbol'].startswith(search_query)
 ]
 
 if matching_markets:
     labels = [m['label'] for m in matching_markets]
-    
-    # Selected label from dropdown
-    selected_label = st.sidebar.selectbox("Select Available Market:", labels)
+    selected_label = st.sidebar.selectbox("Select Available Spot Market:", labels)
     pending_market = next(m for m in matching_markets if m['label'] == selected_label)
 
-    # Manual Trigger Button to run analysis
     analyze_click = st.sidebar.button("🚀 Analyze Dip Setup", type="primary", use_container_width=True)
+    scan_click = st.sidebar.button("🔍 Scan Market (15m)", use_container_width=True)
 
-    # Initial boot default
     if 'active_market' not in st.session_state:
         st.session_state['active_market'] = pending_market
         st.session_state['recent_markets'] = [pending_market]
 
-    # Trigger analysis ONLY on explicit button click
     if analyze_click:
         st.session_state['active_market'] = pending_market
-        
-        # Add to recent markets (deduplicated, max 5)
         recent = [m for m in st.session_state['recent_markets'] if m['symbol'] != pending_market['symbol']]
         recent.insert(0, pending_market)
         st.session_state['recent_markets'] = recent[:5]
 
     active_market = st.session_state['active_market']
 
-    # --- Selected Market Banner ---
+    # Selected Market Banner
     st.markdown(
         f"""
         <div class="selected-market-banner">
-            <span style="color: #94a3b8; font-size: 0.82rem; font-weight: 600; text-transform: uppercase;">Currently Analyzing (Spot)</span><br/>
+            <span style="color: #94a3b8; font-size: 0.82rem; font-weight: 600; text-transform: uppercase;">Currently Analyzing (15m Primary)</span><br/>
             <span style="font-size: 1.15rem; font-weight: 700; color: #f8fafc;">📍 {active_market['label']}</span>
         </div>
         """,
         unsafe_allow_html=True
     )
 
-    # --- Recent Selections Quick-Switch Pills ---
+    # Recent Selections Quick-Switch Pills
     recent_list = st.session_state['recent_markets']
     if len(recent_list) > 1:
         st.markdown("**🕒 Recent Selections:**")
@@ -609,219 +790,273 @@ if matching_markets:
         for idx, r_m in enumerate(recent_list):
             is_active = (r_m['symbol'] == active_market['symbol'])
             btn_label = f"● {r_m['base']}" if is_active else r_m['base']
-            
-            # Clicking a recent pill triggers immediate switch
             if rec_cols[idx].button(
-                btn_label, 
-                key=f"rec_btn_{r_m['symbol']}_{idx}", 
-                disabled=is_active, 
+                btn_label,
+                key=f"rec_btn_{r_m['symbol']}_{idx}",
+                disabled=is_active,
                 use_container_width=True
             ):
                 st.session_state['active_market'] = r_m
                 st.session_state['search_query_val'] = r_m['base']
                 st.rerun()
 
-    st.write("")  # Spacing divider
+    st.write("")
 
-    # --- Fetch Data & Process Analysis ---
+    # Fetch Closed Candles: 15m Primary + 1H + 4H + BTC 4H (+ optional 5m)
     symbol = active_market['symbol']
-    with st.spinner(f"Scanning spot dip setup for {symbol}..."):
-        df = fetch_ohlcv_data(symbol, timeframe=timeframe)
+    with st.spinner(f"Evaluating 15m dip setup for {symbol}..."):
+        m15_raw = fetch_ohlcv_data(symbol, timeframe="15m", limit=260)
+        h1_raw = fetch_ohlcv_data(symbol, timeframe="1h", limit=260)
+        h4_raw = fetch_ohlcv_data(symbol, timeframe="4h", limit=260)
+        btc_raw = fetch_ohlcv_data("BTC/USDT", timeframe="4h", limit=260)
+        m5_raw = fetch_ohlcv_data(symbol, timeframe="5m", limit=60) if use_5m_refine else pd.DataFrame()
         fng = fetch_fear_and_greed()
 
-    if not df.empty and len(df) >= 30:
-        df = calculate_technical_indicators(df)
-        fibs, swing_high, swing_low = calculate_fibonacci_levels(df, lookback=DEFAULT_FIB_LOOKBACK)
-        score, score_breakdown = evaluate_dip_confluence(df, fibs, fng)
-        dip_plan = generate_spot_dip_plan(df, fibs, score)
+    if len(m15_raw) >= MIN_BARS and len(h1_raw) >= MIN_BARS and len(h4_raw) >= MIN_BARS:
+        m15_df = calculate_technical_indicators(m15_raw)
+        h1_df = calculate_technical_indicators(h1_raw)
+        h4_df = calculate_technical_indicators(h4_raw)
+        btc_df = calculate_technical_indicators(btc_raw) if len(btc_raw) >= MIN_BARS else None
+        m5_df = calculate_technical_indicators(m5_raw) if (use_5m_refine and len(m5_raw) >= 20) else None
 
-        latest_price = df['close'].iloc[-1]
-        prev_price = df['close'].iloc[-2]
+        fibs, _, _ = calculate_fibonacci_levels(m15_df, lookback=DEFAULT_FIB_LOOKBACK)
+        res = evaluate_intraday_dip_setup(m15_df, h1_df, h4_df, btc_df, fibs, fee_side_pct, m5_df=m5_df)
+
+        # Deduplicate signals per symbol + completed 15m candle timestamp
+        candle_key = f"{symbol}|{m15_df['timestamp'].iloc[-1].isoformat()}"
+        if res["state"] in ("Confirmed", "Watch"):
+            existing_keys = {entry["dedup_key"] for entry in st.session_state['signal_log']}
+            if candle_key not in existing_keys:
+                st.session_state['signal_log'].insert(0, {
+                    "dedup_key": candle_key,
+                    "time": m15_df['timestamp'].iloc[-1].strftime('%Y-%m-%d %H:%M UTC'),
+                    "pair": symbol,
+                    "state": res["state"],
+                    "score": res["score"],
+                    "entry": res["price"],
+                    "tp1": res["tp1"],
+                    "stop": res["stop"],
+                    "rr": round(res["net_r_multiple"], 2),
+                })
+                st.session_state['signal_log'] = st.session_state['signal_log'][:25]
+
+        latest_price = res['price']
+        prev_price = float(m15_df['close'].iloc[-2])
         price_change_pct = ((latest_price - prev_price) / prev_price) * 100
+
+        st.caption(
+            f"Closed 15m candle: **{m15_df['timestamp'].iloc[-1].strftime('%Y-%m-%d %H:%M UTC')}** · "
+            f"Net R:R: **{res['net_r_multiple']:.2f}R** · {res['m5_note']}"
+        )
 
         # --- HIGH-LEVEL OVERVIEW ---
         row1_col1, row1_col2 = st.columns(2)
         with row1_col1:
-            st.metric("Current Price", format_price(latest_price), f"{price_change_pct:+.2f}%")
+            st.metric("15m Close Price", format_price(latest_price), f"{price_change_pct:+.2f}%")
         with row1_col2:
-            st.metric("Spot Action", dip_plan['action'])
+            st.metric("Intraday Action", res['action'])
 
         row2_col1, row2_col2 = st.columns(2)
         with row2_col1:
-            st.metric("Setup Read", dip_plan['confidence'])
+            st.metric("4H / 1H Trend", f"{res['trend4h']} / {res['trend1h']}", f"BTC 4H: {res['btc_trend']}")
         with row2_col2:
-            st.metric(
-                "Dip Setup Score", 
-                f"{score} / 100", 
-                help="Higher scores (60+) mean stronger dip alignment near support with cooling momentum. Below 40 means wait for a better dip."
-            )
+            st.metric("Dip Score", f"{res['score']} / 100", f"State: {res['state']}")
 
         st.divider()
 
-        # --- SPOT DIP & RESISTANCE EXECUTION SUMMARY CARD ---
-        st.subheader("🎯 Spot Dip & Sell Plan")
-        
-        if "BUY DIP" in dip_plan['action']:
-            st.success("🟢 **PRIME SPOT DIP SETUP**")
-        elif "SCALE" in dip_plan['action']:
-            st.warning("🟡 **MODERATE PULLBACK / SCALE-IN ZONE**")
+        # --- INTRADAY PLAN CARD ---
+        st.subheader("🎯 15m Intraday Dip & Resistance Plan")
+        if res["state"] == "Confirmed":
+            st.success(f"🟢 **CONFIRMED INTRADAY DIP** — {res['reason']}")
+        elif res["state"] == "Watch":
+            st.warning(f"🟡 **WATCH / PULLBACK ZONE** — {res['reason']}")
         else:
-            st.info("⏸️ **WAIT FOR DEEPER DIP**")
-        
+            st.info(f"⏸️ **WAITING** — {res['reason']}")
+
         with st.container():
             p_col1, p_col2 = st.columns(2)
-            p_col1.metric("1. Dip Buy Zone", dip_plan['entry_range'], f"~{dip_plan['dip_depth_pct']:.2f}% lower bound")
-            p_col2.metric("2. Invalidation Level", format_price(dip_plan['sl']), f"-{dip_plan['sl_pct']:.2f}%")
-            
+            p_col1.metric("1. Dip Buy Zone", res['entry_range'], f"Sup {res['support_dist_pct']:.2f}% below")
+            p_col2.metric("2. ATR/Swing Stop", format_price(res['stop']), f"-{res['risk_pct']:.2f}%")
+
             p_col3, p_col4 = st.columns(2)
-            p_col3.metric("3. Resistance Sell TP1", format_price(dip_plan['tp1']), f"+{dip_plan['tp1_pct']:.2f}%")
-            p_col4.metric("4. Resistance Sell TP2", format_price(dip_plan['tp2']), f"+{dip_plan['tp2_pct']:.2f}%")
+            p_col3.metric("3. Resistance TP1", format_price(res['tp1']), f"{res['tp1_net_pct']:+.2f}% net")
+            p_col4.metric("4. Resistance TP2", format_price(res['tp2']), f"{res['tp2_net_pct']:+.2f}% net")
 
         st.divider()
 
-        # --- DETAILED TABBED VIEWS ---
+        # --- TABS ---
         tab1, tab2, tab3, tab4 = st.tabs([
-            "🎯 Dip Strategy", 
-            "📊 Score Breakdown", 
-            "📈 Support & Resistance", 
-            "📋 Raw Data"
+            "🔍 Market Scanner",
+            "🧮 Position & Sizing",
+            "📊 Layers & S/R",
+            "📌 Open & Log"
         ])
 
         with tab1:
-            st.subheader("💡 Why this Spot Plan?")
-            for item in dip_plan['rationale']:
-                st.markdown(f"- {item}")
-                
-            st.info(
-                "🛡 **Spot Patience Rule:** "
-                "Spot trading works best when you buy pullbacks into support and sell into resistance—not green spikes. "
-                f"Only consider invalidation if a **{timeframe.upper()} candle closes below {format_price(dip_plan['sl'])}**."
-            )
+            st.subheader("Bitget USDT Spot Scanner (15m)")
+            st.caption("Designed to surface a handful of liquid candidates on active days; signal frequency is market-dependent.")
 
-            st.divider()
-            st.subheader("🧮 Spot Position & Target Calculator")
-            st.caption("Estimate token quantity and net spot gain at TP1 / TP2 after round-trip trading fees.")
+            sc1, sc2 = st.columns(2)
+            with sc1:
+                min_vol_k = st.selectbox("Min 24h Volume", options=[250, 500, 1000, 2500], index=1, format_func=lambda v: f"${v:,}K")
+            with sc2:
+                max_coins = st.selectbox("Pairs to Scan", options=[15, 25, 40], index=1)
 
-            calc_c1, calc_c2 = st.columns(2)
-            with calc_c1:
-                alloc_usdt = st.number_input(
-                    "Allocation (USDT)",
-                    min_value=1.0,
-                    value=100.0,
-                    step=10.0,
-                    key="spot_alloc_usdt"
-                )
-            with calc_c2:
-                fee_pct = st.number_input(
-                    "Round-Trip Fee (%)",
-                    min_value=0.0,
-                    max_value=5.0,
-                    value=0.20,
-                    step=0.02,
-                    key="spot_round_trip_fee",
-                    help="Combined buy + sell spot fee percentage (e.g., 0.20% = 0.10% maker/taker each side)."
+            if scan_click or st.button("🔄 Run Spot Scanner Now", use_container_width=True):
+                st.session_state['last_scan'] = run_market_dip_scanner(
+                    max_coins=max_coins,
+                    min_quote_vol=float(min_vol_k * 1000),
+                    max_spread_pct=0.35,
+                    fee_side_pct=fee_side_pct
                 )
 
-            ref_entry = dip_plan['entry_max'] if dip_plan['entry_max'] > 0 else latest_price
-            est_qty = alloc_usdt / ref_entry if ref_entry > 0 else 0.0
-            fee_drag_usdt = alloc_usdt * (fee_pct / 100.0)
+            scan_rows = st.session_state.get('last_scan', [])
+            if scan_rows:
+                disp = pd.DataFrame([
+                    {
+                        "Pair": r["symbol"],
+                        "State": r["state"],
+                        "Score": f"{r['score']}/100",
+                        "Price": format_price(r["price"]),
+                        "TP1": format_price(r["tp1"]),
+                        "Net R:R": f"{r['rr']:.2f}R",
+                        "RSI": f"{r['rsi']:.1f}",
+                    }
+                    for r in scan_rows
+                ])
+                st.dataframe(disp, use_container_width=True, hide_index=True)
 
-            tp1_gross_pct = ((dip_plan['tp1'] - ref_entry) / ref_entry) * 100.0 if ref_entry > 0 else 0.0
-            tp2_gross_pct = ((dip_plan['tp2'] - ref_entry) / ref_entry) * 100.0 if ref_entry > 0 else 0.0
-            sl_gross_pct = ((dip_plan['sl'] - ref_entry) / ref_entry) * 100.0 if ref_entry > 0 else 0.0
-
-            tp1_net_usdt = (est_qty * (dip_plan['tp1'] - ref_entry)) - fee_drag_usdt
-            tp2_net_usdt = (est_qty * (dip_plan['tp2'] - ref_entry)) - fee_drag_usdt
-            sl_net_usdt = (est_qty * (dip_plan['sl'] - ref_entry)) - fee_drag_usdt
-
-            tp1_net_pct = (tp1_net_usdt / alloc_usdt) * 100.0 if alloc_usdt > 0 else 0.0
-            tp2_net_pct = (tp2_net_usdt / alloc_usdt) * 100.0 if alloc_usdt > 0 else 0.0
-            sl_net_pct = (sl_net_usdt / alloc_usdt) * 100.0 if alloc_usdt > 0 else 0.0
-
-            m_c1, m_c2, m_c3 = st.columns(3)
-            m_c1.metric(f"Est. {active_market['base']} Qty", f"{est_qty:,.4f}", f"@ {format_price(ref_entry)}")
-            m_c2.metric("Net Profit @ TP1", f"{tp1_net_usdt:+,.2f} USDT", f"{tp1_net_pct:+.2f}% net ({tp1_gross_pct:+.2f}% gross)")
-            m_c3.metric("Net Profit @ TP2", f"{tp2_net_usdt:+,.2f} USDT", f"{tp2_net_pct:+.2f}% net ({tp2_gross_pct:+.2f}% gross)")
-
-            st.caption(
-                f"Est. Invalidation impact @ {format_price(dip_plan['sl'])}: "
-                f"**{sl_net_usdt:+,.2f} USDT** ({sl_net_pct:+.2f}% net / {sl_gross_pct:+.2f}% gross) · "
-                f"Est. round-trip fee drag: **{fee_drag_usdt:.2f} USDT**."
-            )
+                pick_symbol = st.selectbox("Load scanned pair into analyzer:", [r["symbol"] for r in scan_rows])
+                if st.button("Load Selected Pair", key="load_scanned_pair_btn"):
+                    found_m = next((m for m in all_markets if m["symbol"] == pick_symbol), None)
+                    if found_m:
+                        st.session_state['active_market'] = found_m
+                        st.session_state['search_query_val'] = found_m['base']
+                        st.rerun()
+            else:
+                st.info("Click **Run Spot Scanner Now** or **Scan Market (15m)** in the sidebar to rank liquid USDT spot dip candidates.")
 
         with tab2:
-            st.subheader("5-Layer Spot Dip Score Breakdown")
+            st.subheader("Fee-Aware Position & Risk Sizing")
+            fee = fee_side_pct / 100.0
+            entry_cost_per_unit = latest_price * (1.0 + fee)
+            stop_proceeds_per_unit = res['stop'] * (1.0 - fee)
+            net_risk_per_unit = max(entry_cost_per_unit - stop_proceeds_per_unit, 0.0)
+            risk_budget_usdt = account_equity_usdt * (max_risk_pct / 100.0)
+
+            # Risk-based quantity, capped by the planned notional allocation.
+            qty_by_risk = risk_budget_usdt / net_risk_per_unit if net_risk_per_unit > 0 else 0.0
+            qty_by_allocation = alloc_usdt / entry_cost_per_unit if entry_cost_per_unit > 0 else 0.0
+            est_qty = min(qty_by_risk, qty_by_allocation)
+            buy_cost = est_qty * entry_cost_per_unit
+
+            tp1_pnl = (est_qty * res['tp1'] * (1.0 - fee)) - buy_cost
+            tp2_pnl = (est_qty * res['tp2'] * (1.0 - fee)) - buy_cost
+            sl_pnl = (est_qty * res['stop'] * (1.0 - fee)) - buy_cost
+            actual_stop_risk = abs(sl_pnl)
+            implied_risk_pct = (actual_stop_risk / account_equity_usdt) * 100.0 if account_equity_usdt > 0 else 0.0
+
+            m1, m2, m3 = st.columns(3)
+            m1.metric(f"Est. {active_market['base']} Qty", f"{est_qty:,.4f}", f"@ {format_price(latest_price)}")
+            m2.metric("Net P/L @ TP1", f"{tp1_pnl:+.2f} USDT", f"{(tp1_pnl / buy_cost * 100):+.2f}% net")
+            m3.metric("Net P/L @ TP2", f"{tp2_pnl:+.2f} USDT", f"{(tp2_pnl / buy_cost * 100):+.2f}% net")
+
             st.caption(
-                "Scores **0 to 100** based on Trend Health, Dip Momentum (RSI/MACD), Volume/OBV absorption, "
-                "Fibonacci + Williams Fractal support confluence, and Market Fear."
+                f"Stop impact @ {format_price(res['stop'])}: **{sl_pnl:+.2f} USDT** ({(sl_pnl / buy_cost * 100):+.2f}% net) · "
+                f"Account risk at stop: **{implied_risk_pct:.2f}%** (Target: **{max_risk_pct:.2f}% / {risk_budget_usdt:.2f} USDT**) · "
+                f"Fear & Greed (context): **{fng['value'] if fng['value'] is not None else 'N/A'} ({fng['classification']})**."
             )
-            st.progress(max(0, min(100, score)))
-            
-            for category, data in score_breakdown.items():
-                c1, c2, c3 = st.columns([2, 1, 3])
-                c1.write(f"**{category}**")
-                c2.write(f"`{data['score']}/{data['max']} pts`")
-                c3.caption(data['detail'])
+
+            if st.button("➕ Track Current Setup as Open Position", use_container_width=True):
+                if not any(p.get("pair") == symbol for p in st.session_state['open_positions']):
+                    st.session_state['open_positions'].append({
+                        "pair": symbol,
+                        "entry": latest_price,
+                        "stop": res['stop'],
+                        "tp1": res['tp1'],
+                        "tp2": res['tp2'],
+                        "qty": est_qty,
+                    })
+                    save_positions(st.session_state['open_positions'])
+                    st.success(f"Added {symbol} to Open Positions tracker.")
+                else:
+                    st.warning(f"{symbol} is already in your Open Positions tracker.")
 
         with tab3:
+            st.subheader("Three-Layer Score Breakdown")
+            st.progress(res['score'] / 100)
+            for cat, info in res['breakdown'].items():
+                c1, c2, c3 = st.columns([2, 1, 3])
+                c1.write(f"**{cat}**")
+                c2.write(f"`{info['score']}/{info['max']} pts`")
+                c3.caption(info['detail'])
+
+            st.divider()
             col_a, col_b = st.columns(2)
-            
             with col_a:
-                st.subheader("Fibonacci Levels")
-                fib_df = pd.DataFrame(list(fibs.items()), columns=['Fib Level', 'Price Level'])
-                fib_df['Distance'] = fib_df['Price Level'].apply(lambda x: f"{((latest_price - x)/x)*100:+.2f}%" if x else "0.00%")
-                fib_df['Price Level'] = fib_df['Price Level'].apply(format_price)
-                st.table(fib_df)
-
-            with col_b:
-                st.subheader("Fractal S/R Candidates")
-                recent_res, recent_sup = fetch_recent_pivots(df)
-                
-                pivot_data = []
-                if recent_res:
-                    for res in reversed(recent_res):
-                        pct_move = ((res - latest_price) / latest_price) * 100
-                        pivot_data.append({
-                            "Candidate": f"Resistance ({pct_move:+.1f}%)",
-                            "Level": format_price(res)
-                        })
-                if recent_sup:
-                    for sup in reversed(recent_sup):
-                        pct_move = ((sup - latest_price) / latest_price) * 100
-                        pivot_data.append({
-                            "Candidate": f"Support ({pct_move:+.1f}%)",
-                            "Level": format_price(sup)
-                        })
-                
-                if pivot_data:
-                    st.table(pd.DataFrame(pivot_data))
+                st.subheader("15m Supports")
+                if res['supports']:
+                    st.table(pd.DataFrame([{"Support": format_price(s)} for s in res['supports']]))
                 else:
-                    st.info("No fractal pivots detected in recent candles.")
-
-            st.subheader("Key Indicators")
-            latest = df.iloc[-1]
-            tech_data = {
-                "Metric": ["EMA 20", "EMA 50", "EMA 200", "RSI (14)", "MACD Hist", "20-SMA Vol", "Fear & Greed"],
-                "Value": [
-                    format_price(latest['ema_20']),
-                    format_price(latest['ema_50']),
-                    format_price(latest['ema_200']) if len(df) >= 200 else "N/A (<200 bars)",
-                    f"{latest['rsi']:.2f}",
-                    format_decimal(latest['macd_hist']),
-                    f"{latest['vol_sma_20']:,.2f}",
-                    f"{fng['value']} ({fng['classification']})"
-                ]
-            }
-            st.table(pd.DataFrame(tech_data))
+                    st.info("No confirmed support below price.")
+            with col_b:
+                st.subheader("15m Resistances")
+                if res['resistances']:
+                    st.table(pd.DataFrame([{"Resistance": format_price(r)} for r in res['resistances']]))
+                else:
+                    st.info("No confirmed resistance above price.")
 
         with tab4:
-            st.subheader("Recent Market Data")
-            st.dataframe(
-                df[['timestamp', 'open', 'high', 'low', 'close', 'volume', 'rsi', 'ema_20', 'ema_50']].tail(20), 
-                use_container_width=True
-            )
+            st.subheader("Open Spot Positions (Separate Monitor)")
+            if st.session_state['open_positions']:
+                pos_rows = []
+                position_tickers = fetch_spot_tickers_snapshot()
+                for idx, pos in enumerate(st.session_state['open_positions']):
+                    ticker = position_tickers.get(pos["pair"], {}) if position_tickers else {}
+                    cur_p = ticker.get("last") or ticker.get("close")
+                    if cur_p is not None and float(cur_p) > 0:
+                        cur_p = float(cur_p)
+                        unrealized = (pos["qty"] * cur_p * (1.0 - fee)) - (pos["qty"] * pos["entry"] * (1.0 + fee))
+                        pnl_text = f"{unrealized:+.2f} USDT"
+                    else:
+                        cur_p = None
+                        pnl_text = "Ticker unavailable"
+                    pos_rows.append({
+                        "Pair": pos["pair"],
+                        "Entry": format_price(pos["entry"]),
+                        "Current": format_price(cur_p) if cur_p else "N/A",
+                        "Stop": format_price(pos["stop"]),
+                        "TP1": format_price(pos["tp1"]),
+                        "Est. Net P/L": pnl_text,
+                    })
+                st.dataframe(pd.DataFrame(pos_rows), use_container_width=True, hide_index=True)
+                if st.button("Clear Tracked Positions"):
+                    st.session_state['open_positions'] = []
+                    save_positions([])
+                    st.rerun()
+            else:
+                st.info("No open positions tracked yet. Add a setup from the **Position & Sizing** tab.")
+
+            st.divider()
+            st.subheader("Deduplicated Signal Log (Per 15m Candle)")
+            if st.session_state['signal_log']:
+                log_disp = pd.DataFrame([
+                    {
+                        "Time (UTC)": item["time"],
+                        "Pair": item["pair"],
+                        "State": item["state"],
+                        "Score": f"{item['score']}/100",
+                        "Entry": format_price(item["entry"]),
+                        "TP1": format_price(item["tp1"]),
+                        "Net R:R": f"{item['rr']:.2f}R",
+                    }
+                    for item in st.session_state['signal_log']
+                ])
+                st.dataframe(log_disp, use_container_width=True, hide_index=True)
+            else:
+                st.info("Confirmed and Watch setups will log here once per completed 15m bar.")
 
     else:
-        st.warning("Insufficient historical data returned for this spot asset/timeframe combination.")
+        st.warning(f"Insufficient closed candles across 15m/1H/4H (need at least {MIN_BARS} bars for 200 EMA).")
 else:
     st.warning(f"No active Spot USDT pairs found starting with '{search_query}'.")
