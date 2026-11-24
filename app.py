@@ -8,7 +8,7 @@ import json
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(
-    page_title="SH1N Spot Dip Catcher v5",
+    page_title="SH1N Spot Dip Catcher v2",
     page_icon="🎯",
     layout="centered",
     initial_sidebar_state="expanded"
@@ -668,7 +668,7 @@ def run_market_dip_scanner(max_coins=25, min_quote_vol=500_000.0, max_spread_pct
 if 'recent_markets' not in st.session_state:
     st.session_state['recent_markets'] = []
 if 'search_query_val' not in st.session_state:
-    st.session_state['search_query_val'] = "SOL"
+    st.session_state['search_query_val'] = "BTC"
 
 st.title("🎯 SH1N Spot Dip Catcher v5")
 st.caption("15m Spot Setups · 1H/4H Trend Context · Scalp-to-Swing · Bitget USDT Spot")
@@ -680,7 +680,7 @@ all_markets = fetch_all_usdt_markets()
 st.sidebar.header("Spot Market & Scanner")
 search_query = st.sidebar.text_input(
     "Search Ticker / Pair:",
-    value=st.session_state.get('search_query_val', 'SOL')
+    value=st.session_state.get('search_query_val', 'BTC')
 ).strip().upper()
 st.session_state['search_query_val'] = search_query
 
