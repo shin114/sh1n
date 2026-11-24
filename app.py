@@ -7,8 +7,8 @@ import time
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(
-    page_title="SH1N",
-    page_icon="⚡",
+    page_title="SH1N Spot Dip Catcher",
+    page_icon="🎯",
     layout="centered",
     initial_sidebar_state="expanded"
 )
@@ -154,7 +154,7 @@ st.markdown("""
     /* 7. Selected Market Callout Banner Styling */
     .selected-market-banner {
         background-color: #1e293b;
-        border-left: 4px solid #3b82f6;
+        border-left: 4px solid #10b981;
         padding: 8px 12px;
         border-radius: 6px;
         margin-top: 8px;
@@ -172,23 +172,21 @@ exchange = ccxt.bitget({
 # --- 2. Data Fetching Utilities ---
 @st.cache_data(ttl=3600)
 def fetch_all_usdt_markets():
-    """Fetch all active Bitget USDT Spot and Perpetual markets."""
+    """Fetch active Bitget USDT Spot markets."""
     try:
         markets = exchange.load_markets()
         market_list = []
         for symbol, market in markets.items():
-            if market.get('active', True) and market.get('quote') == 'USDT':
-                m_type = 'Spot' if market.get('spot') else ('Perp' if market.get('swap') else None)
-                if m_type:
-                    market_list.append({
-                        'symbol': symbol,
-                        'base': market['base'],
-                        'type': m_type,
-                        'label': f"{symbol} ({m_type})"
-                    })
+            if market.get('active', True) and market.get('quote') == 'USDT' and market.get('spot'):
+                market_list.append({
+                    'symbol': symbol,
+                    'base': market['base'],
+                    'type': 'Spot',
+                    'label': f"{symbol} (Spot)"
+                })
         return market_list
     except Exception as e:
-        st.error(f"Error loading Bitget markets: {e}")
+        st.error(f"Error loading Bitget spot markets: {e}")
         return []
 
 @st.cache_data(ttl=300)
@@ -202,24 +200,6 @@ def fetch_ohlcv_data(symbol, timeframe='4h', limit=150):
     except Exception as e:
         st.error(f"Error fetching OHLCV data for {symbol}: {e}")
         return pd.DataFrame()
-
-@st.cache_data(ttl=300)
-def fetch_derivatives_data(symbol):
-    """Fetch Funding Rate & Open Interest if market is Perpetual/Swap."""
-    if ":" not in symbol:  # CCXT swap symbols contain ':'
-        return {"funding_rate_pct": 0.0, "open_interest": 0.0, "is_perp": False}
-    try:
-        funding_info = exchange.fetch_funding_rate(symbol)
-        funding_rate = funding_info.get('fundingRate', 0.0) * 100
-        oi_info = exchange.fetch_open_interest(symbol)
-        open_interest = oi_info.get('openInterestAmount') or oi_info.get('openInterestValue') or oi_info.get('openInterest') or 0.0
-        return {
-            "funding_rate_pct": funding_rate,
-            "open_interest": open_interest,
-            "is_perp": True
-        }
-    except Exception:
-        return {"funding_rate_pct": 0.0, "open_interest": 0.0, "is_perp": False}
 
 @st.cache_data(ttl=3600)
 def fetch_fear_and_greed():
@@ -315,242 +295,235 @@ def fetch_recent_pivots(df):
     
     return recent_res, recent_sup
 
-# --- 4. Setup Scoring Engine ---
-def evaluate_confluence(df, fibs, derivatives, fng):
-    """Evaluates 6 key market indicators and compiles a single 'Setup Strength Score' out of 100."""
+# --- 4. Spot Dip Scoring Engine (0 to 100) ---
+def evaluate_dip_confluence(df, fibs, fng):
+    """
+    Evaluates Spot dip-buying quality on a 0-100 scale:
+    1. Trend Health (EMAs) - avoids buying into broken downtrends
+    2. Pullback / Dip Momentum (RSI & MACD) - rewards cooled RSI & turning MACD
+    3. Volume & Accumulation (Volume SMA & OBV) - checks real demand/absorption
+    4. Support & Resistance Confluence (Fibs + Williams Fractals)
+    5. Market Sentiment (Fear & Greed) - favors fear/pullbacks over greed spikes
+    """
     latest = df.iloc[-1]
     prev = df.iloc[-2]
     price = latest['close']
 
     breakdown = {}
 
-    # 1. Market Structure & Trend Alignment
+    # 1. Trend & Structure Health (Max 25 pts)
     trend_score = 0
-    if price > latest['ema_20']: trend_score += 10
-    if latest['ema_20'] > latest['ema_50']: trend_score += 10
-    if latest['ema_50'] > latest['ema_200']: trend_score += 10
-    breakdown['Trend Alignment'] = {
-        'score': trend_score, 'max': 30,
-        'detail': f"Price vs EMAs (20/50/200): {'Bullish Stack' if trend_score == 30 else 'Mixed/Bearish'}"
+    trend_notes = []
+    if len(df) >= 200 and not np.isnan(latest['ema_200']):
+        if price >= latest['ema_200']:
+            trend_score += 10
+            trend_notes.append("Above 200 EMA")
+        else:
+            trend_notes.append("Below 200 EMA")
+    if latest['ema_20'] >= latest['ema_50']:
+        trend_score += 8
+        trend_notes.append("20>50 EMA")
+    if price >= latest['ema_50'] * 0.97:
+        trend_score += 7
+        trend_notes.append("Holding near/above 50 EMA")
+
+    breakdown['Trend Health'] = {
+        'score': trend_score, 'max': 25,
+        'detail': " | ".join(trend_notes) if trend_notes else "Evaluating trend"
     }
 
-    # 2. Momentum & Oscillators
+    # 2. Dip Cool-Off & Reversal Momentum (Max 25 pts)
     mom_score = 0
     rsi = latest['rsi']
-    if rsi < 35: mom_score += 10       
-    elif 45 <= rsi <= 60: mom_score += 5 
-    elif rsi > 70: mom_score -= 10     
+    if 28 <= rsi <= 45:
+        mom_score += 15
+        rsi_state = f"Dip Zone (RSI {rsi:.1f})"
+    elif rsi < 28:
+        mom_score += 12
+        rsi_state = f"Deep Oversold (RSI {rsi:.1f})"
+    elif 45 < rsi <= 55:
+        mom_score += 8
+        rsi_state = f"Mild Pullback (RSI {rsi:.1f})"
+    elif rsi > 70:
+        mom_score -= 5
+        rsi_state = f"Overbought/Extended (RSI {rsi:.1f})"
+    else:
+        rsi_state = f"Mid RSI ({rsi:.1f})"
 
-    if latest['macd_hist'] > 0 and latest['macd_hist'] > prev['macd_hist']:
-        mom_score += 10  
-    elif latest['macd_hist'] < 0 and latest['macd_hist'] < prev['macd_hist']:
-        mom_score -= 10  
-    breakdown['Momentum (RSI & MACD)'] = {
-        'score': max(-20, min(20, mom_score)), 'max': 20,
-        'detail': f"RSI: {rsi:.1f} | MACD Hist: {format_decimal(latest['macd_hist'])}"
+    if latest['macd_hist'] > prev['macd_hist']:
+        mom_score += 10
+        macd_state = "MACD Hist Rising"
+    elif latest['macd_hist'] > 0:
+        mom_score += 5
+        macd_state = "MACD Hist Positive"
+    else:
+        macd_state = "MACD Hist Falling"
+
+    breakdown['Dip Momentum'] = {
+        'score': max(0, min(25, mom_score)), 'max': 25,
+        'detail': f"{rsi_state} | {macd_state}"
     }
 
-    # 3. Volume & Order Flow
+    # 3. Volume & Order Flow Absorption (Max 15 pts)
     vol_score = 0
-    if latest['volume'] > latest['vol_sma_20']: vol_score += 8
-    if latest['obv'] > prev['obv']: vol_score += 7
-    else: vol_score -= 7
-    breakdown['Volume Strength'] = {
-        'score': max(-15, min(15, vol_score)), 'max': 15,
-        'detail': f"Above 20-SMA Vol: {latest['volume'] > latest['vol_sma_20']} | OBV Up: {latest['obv'] > prev['obv']}"
+    vol_spike = latest['volume'] > latest['vol_sma_20']
+    obv_rising = latest['obv'] > prev['obv']
+    if vol_spike and obv_rising:
+        vol_score += 10
+    elif vol_spike or obv_rising:
+        vol_score += 6
+    if latest['obv'] >= df['obv'].tail(5).min():
+        vol_score += 5
+
+    breakdown['Volume & OBV'] = {
+        'score': min(15, vol_score), 'max': 15,
+        'detail': f"Vol>20SMA: {vol_spike} | OBV Up: {obv_rising}"
     }
 
-    # 4. Directional S/R & Confluence (Fibonacci + Williams Fractal Pivots)
+    # 4. Support Proximity & Fib/Pivot Confluence (Max 20 pts)
     sr_score = 0
-    detail_notes = []
+    sr_notes = []
+    recent_res, recent_sup = fetch_recent_pivots(df)
+    golden_pocket = fibs['0.618 (Golden Pocket)']
+    mid_point = fibs['0.500 (Mid Point)']
+    fib_0786 = fibs['0.786']
+
+    support_candidates = [s for s in (recent_sup + [golden_pocket, mid_point, fib_0786]) if s <= price * 1.005]
+    closest_sup = max(support_candidates) if support_candidates else None
+    dist_to_sup = ((price - closest_sup) / price) if (closest_sup and closest_sup > 0) else 1.0
+
+    if dist_to_sup <= 0.015:
+        sr_score += 15
+        sr_notes.append(f"At Support ({dist_to_sup*100:.2f}%)")
+    elif dist_to_sup <= 0.035:
+        sr_score += 10
+        sr_notes.append(f"Near Support ({dist_to_sup*100:.2f}%)")
+    else:
+        sr_notes.append(f"Support {dist_to_sup*100:.2f}% below")
+
+    # Overlap bonus between Fibonacci pullback levels and Williams Fractal pivots
+    has_overlap = False
+    for fib_lvl in [golden_pocket, mid_point, fib_0786]:
+        for piv in (recent_sup + recent_res):
+            if piv > 0 and abs(fib_lvl - piv) / fib_lvl <= 0.015:
+                has_overlap = True
+                break
+    if has_overlap:
+        sr_score += 5
+        sr_notes.append("⭐ Fib+Pivot Confluence")
+
+    breakdown['Support Confluence'] = {
+        'score': min(20, sr_score), 'max': 20,
+        'detail': " | ".join(sr_notes)
+    }
+
+    # 5. Market Sentiment / Fear (Max 15 pts)
+    sent_score = 0
+    fng_val = fng['value']
+    if fng_val < 30:
+        sent_score += 15
+    elif fng_val <= 50:
+        sent_score += 10
+    elif fng_val <= 65:
+        sent_score += 5
+    else:
+        sent_score += 2
+
+    breakdown['Market Fear'] = {
+        'score': sent_score, 'max': 15,
+        'detail': f"Fear & Greed: {fng_val} ({fng['classification']})"
+    }
+
+    total_score = sum(item['score'] for item in breakdown.values())
+    return max(0, min(100, int(total_score))), breakdown
+
+# --- 5. Spot Dip & Resistance Sell Target Generator ---
+def generate_spot_dip_plan(df, fibs, score):
+    """
+    Builds a Spot dip-buying zone and overhead resistance sell targets (TP1, TP2)
+    plus a structural invalidation level (SL).
+    """
+    latest = df.iloc[-1]
+    price = latest['close']
+    atr = latest['atr'] if not np.isnan(latest['atr']) and latest['atr'] > 0 else price * 0.02
 
     recent_res, recent_sup = fetch_recent_pivots(df)
     golden_pocket = fibs['0.618 (Golden Pocket)']
     mid_point = fibs['0.500 (Mid Point)']
-
-    # Identify closest support below or at price
-    valid_supports = [s for s in (recent_sup + [golden_pocket, mid_point]) if s <= price * 1.005]
-    closest_sup = max(valid_supports) if valid_supports else None
-
-    # Identify closest resistance above or at price
-    valid_resistances = [r for r in (recent_res + [fibs['0.000 (Swing High)']]) if r >= price * 0.995]
-    closest_res = min(valid_resistances) if valid_resistances else None
-
-    # Calculate proximity percentages
-    dist_to_sup = ((price - closest_sup) / price) if closest_sup else 1.0
-    dist_to_res = ((closest_res - price) / price) if closest_res else 1.0
-
-    # Bullish Support Reaction Points
-    if dist_to_sup <= 0.015:
-        sr_score += 10
-        detail_notes.append("Holding Key Support (<=1.5%)")
-    elif dist_to_sup <= 0.03:
-        sr_score += 5
-        detail_notes.append("Near Support Zone (<=3%)")
-
-    # Bearish Resistance Penalty (buying into overhead resistance)
-    if dist_to_res <= 0.015:
-        sr_score -= 10
-        detail_notes.append("Testing Heavy Resistance (<=1.5%)")
-    elif dist_to_res <= 0.03:
-        sr_score -= 5
-        detail_notes.append("Approaching Resistance (<=3%)")
-
-    # Confluence Bonus: Check if Fibonacci Golden/Mid level overlaps with a Williams Fractal Pivot
-    has_confluence = False
-    for fib_lvl in [golden_pocket, mid_point]:
-        for piv in (recent_sup + recent_res):
-            if abs(fib_lvl - piv) / fib_lvl <= 0.015:  # Within 1.5% overlap
-                has_confluence = True
-                break
-
-    if has_confluence:
-        sr_score += 5
-        detail_notes.append("⭐ Golden Fib + Pivot Overlap")
-
-    final_sr_score = max(-15, min(15, sr_score))
-    sr_detail_text = " | ".join(detail_notes) if detail_notes else "Mid-range trading (No immediate S/R bounce)"
-
-    breakdown['Key S/R & Confluence'] = {
-        'score': final_sr_score, 'max': 15,
-        'detail': sr_detail_text
-    }
-
-    # 5. Derivatives Setup
-    deriv_score = 0
-    if derivatives['is_perp']:
-        fr = derivatives['funding_rate_pct']
-        if fr < -0.01:
-            deriv_score += 10  
-        elif -0.01 <= fr <= 0.015:
-            deriv_score += 5   
-        elif fr > 0.03:
-            deriv_score -= 10  
-    else:
-        deriv_score = 5  
-    breakdown['Derivatives Data'] = {
-        'score': max(-10, min(10, deriv_score)), 'max': 10,
-        'detail': f"Funding Rate: {derivatives['funding_rate_pct']:.4f}%" if derivatives['is_perp'] else "Spot Market"
-    }
-
-    # 6. Overall Market Sentiment
-    sent_score = 0
-    fng_val = fng['value']
-    if fng_val < 25:
-        sent_score += 10  
-    elif 25 <= fng_val <= 55:
-        sent_score += 5   
-    elif fng_val > 75:
-        sent_score -= 10  
-    breakdown['Market Sentiment'] = {
-        'score': max(-10, min(10, sent_score)), 'max': 10,
-        'detail': f"Fear & Greed Index: {fng_val} ({fng['classification']})"
-    }
-
-    total_score = sum(item['score'] for item in breakdown.values())
-    return total_score, breakdown
-
-# --- 5. Simplified Trade Plan Deductor ---
-def generate_plain_english_trade_plan(df, fibs, score):
-    """
-    Translates technical indicators into a simplified recommendation
-    with estimated win probability, entry range, SL, TP1, and TP2.
-    """
-    latest = df.iloc[-1]
-    price = latest['close']
-    atr = latest['atr'] if not np.isnan(latest['atr']) else price * 0.02
-
-    golden_pocket = fibs['0.618 (Golden Pocket)']
     swing_high = fibs['0.000 (Swing High)']
-    swing_low = fibs['1.000 (Swing Low)']
+    fib_0382 = fibs['0.382']
+    fib_0236 = fibs['0.236']
 
-    # Case 1: BULLISH BUY SIGNAL (Score >= 25)
-    if score >= 25:
-        action = "BUY / LONG 🟢"
-        
-        if score >= 65:
-            probability = "High (~75%-82%)"
-        elif score >= 45:
-            probability = "Mod-High (~65%-74%)"
-        else:
-            probability = "Moderate (~55%-64%)"
+    # Support candidates below or slightly above current price for dip entry
+    supports_below = sorted([s for s in (recent_sup + [fibs['0.786'], golden_pocket, mid_point]) if s <= price * 1.003])
+    key_support = supports_below[-1] if supports_below else max(price - (1.5 * atr), price * 0.95)
 
-        support_levels = [v for k, v in fibs.items() if v <= price]
-        key_support = max(support_levels) if support_levels else price - (atr * 1.5)
-        
+    # Overhead resistance candidates above current price for selling into strength
+    resistances_above = sorted([r for r in (recent_res + [fib_0382, fib_0236, swing_high]) if r > price * 1.005])
+    tp1 = resistances_above[0] if resistances_above else price + (2.0 * atr)
+    if len(resistances_above) > 1:
+        tp2 = resistances_above[1]
+    else:
+        tp2 = max(swing_high, tp1 * 1.04) if swing_high > tp1 * 1.01 else tp1 * 1.05
+
+    # Ensure TP2 is strictly above TP1
+    if tp2 <= tp1:
+        tp2 = tp1 * 1.04
+
+    # Structural invalidation below nearest support with ATR cushion
+    sl = min(key_support - (1.2 * atr), price * 0.90) if key_support < price else price - (2.0 * atr)
+    if sl >= price:
+        sl = price * 0.95
+
+    if score >= 60:
+        action = "BUY DIP 🟢"
+        confidence = "High Dip Setup (~72%-82%)"
         entry_min = min(key_support, price * 0.992)
         entry_max = price
-        
-        sl = key_support - (1.5 * atr)
-        risk_per_unit = price - sl
-        if risk_per_unit <= 0:
-            risk_per_unit = atr * 1.5
-            sl = price - risk_per_unit
-
-        tp1 = price + (risk_per_unit * 1.5)
-        tp2 = max(swing_high, price + (risk_per_unit * 2.5))
-
         rationale = [
-            f"**Trend Control:** High setup score (+{score}/100) indicates buyers dominate this market.",
-            f"**Entry Strategy:** Buy between **{format_price(entry_min)}** and **{format_price(entry_max)}** on minor dips.",
-            f"**Risk Management:** Cut losses if a candle closes below **{format_price(sl)}** (Risk: -{((price-sl)/price)*100:.2f}%)."
+            f"**Dip Quality:** Score is **{score}/100**, showing solid dip alignment across trend, pullback momentum, and support.",
+            f"**Dip Entry Zone:** Accumulate spot bids between **{format_price(entry_min)}** and **{format_price(entry_max)}**.",
+            f"**Resistance Sell Plan:** Trim/sell into overhead resistance candidates at **{format_price(tp1)}** (TP1) and **{format_price(tp2)}** (TP2); invalidation below **{format_price(sl)}**."
         ]
-
-    # Case 2: BEARISH SELL SIGNAL (Score <= -25)
-    elif score <= -25:
-        action = "SELL / SHORT 🔴"
-        
-        if score <= -65:
-            probability = "High (~75%-82%)"
-        elif score <= -45:
-            probability = "Mod-High (~65%-74%)"
-        else:
-            probability = "Moderate (~55%-64%)"
-
-        resistance_levels = [v for k, v in fibs.items() if v >= price]
-        key_resistance = min(resistance_levels) if resistance_levels else price + (atr * 1.5)
-        
-        entry_min = price
-        entry_max = max(key_resistance, price * 1.008)
-        
-        sl = key_resistance + (1.5 * atr)
-        risk_per_unit = sl - price
-        if risk_per_unit <= 0:
-            risk_per_unit = atr * 1.5
-            sl = price + risk_per_unit
-
-        tp1 = price - (risk_per_unit * 1.5)
-        tp2 = min(swing_low, price - (risk_per_unit * 2.5))
-
+    elif score >= 40:
+        action = "SCALE / DCA DIP 🟡"
+        confidence = "Moderate Dip Setup (~58%-70%)"
+        entry_min = min(key_support, price * 0.985)
+        entry_max = price * 0.998
         rationale = [
-            f"**Trend Control:** Low setup score ({score}/100) indicates sellers are pushing price lower.",
-            f"**Entry Strategy:** Sell or short relief bounces between **{format_price(entry_min)}** and **{format_price(entry_max)}**.",
-            f"**Risk Management:** Cut losses if a candle closes above **{format_price(sl)}** (Risk: -{((sl-price)/price)*100:.2f}%)."
+            f"**Partial Alignment:** Score is **{score}/100**—decent pullback structure, best suited for smaller staggered spot buys.",
+            f"**Staggered Bids:** Look for pullbacks toward **{format_price(entry_min)} - {format_price(entry_max)}** rather than chasing green candles.",
+            f"**Sell Targets:** Overhead resistance candidates sit near **{format_price(tp1)}** and **{format_price(tp2)}** (invalidation: **{format_price(sl)}**)."
         ]
-
-    # Case 3: NEUTRAL / RANGEBOUND (Score between -25 and +25)
     else:
-        action = "STAND BY ⏸️"
-        probability = "Low Edge (~50%)"
-        entry_min, entry_max = price, price
-        sl, tp1, tp2 = price, price, price
-
+        action = "WAIT FOR DIP ⏸️"
+        confidence = "Low Edge / Wait (~50%)"
+        entry_min = min(key_support, golden_pocket) if min(key_support, golden_pocket) < price else price * 0.97
+        entry_max = key_support if key_support < price else price * 0.985
         rationale = [
-            f"**Market Indecision:** Setup score is neutral ({score}/100). Technical indicators conflict.",
-            "**Strategy:** No high-probability entry right now. Cash is a valid position.",
-            f"**Action Plan:** Wait for price to pull back to key Fib levels ({format_price(golden_pocket)}) or break out."
+            f"**Not Ready Yet:** Score is **{score}/100**—either price is too extended/overbought or lacks clean support confluence.",
+            f"**Patient Bid Zone:** Wait for price to dip closer to **{format_price(entry_min)} - {format_price(entry_max)}** instead of buying right now.",
+            f"**Overhead Targets (Once Filled):** Resistance candidates are around **{format_price(tp1)}** and **{format_price(tp2)}**."
         ]
+
+    dip_depth_pct = abs(((entry_min - price) / price) * 100) if price > 0 else 0
+    tp1_pct = abs(((tp1 - price) / price) * 100) if price > 0 else 0
+    tp2_pct = abs(((tp2 - price) / price) * 100) if price > 0 else 0
+    sl_pct = abs(((price - sl) / price) * 100) if price > 0 else 0
 
     return {
         "action": action,
-        "probability": probability,
+        "confidence": confidence,
         "entry_range": f"{format_price(entry_min)} - {format_price(entry_max)}",
+        "entry_min": entry_min,
+        "entry_max": entry_max,
+        "dip_depth_pct": dip_depth_pct,
         "sl": sl,
+        "sl_pct": sl_pct,
         "tp1": tp1,
+        "tp1_pct": tp1_pct,
         "tp2": tp2,
-        "risk_pct": abs(((price - sl) / price) * 100) if sl != price and price > 0 else 0,
-        "tp1_pct": abs(((tp1 - price) / price) * 100) if tp1 != price and price > 0 else 0,
-        "tp2_pct": abs(((tp2 - price) / price) * 100) if tp2 != price and price > 0 else 0,
+        "tp2_pct": tp2_pct,
         "rationale": rationale
     }
 
@@ -564,14 +537,14 @@ if 'search_query_val' not in st.session_state:
     st.session_state['search_query_val'] = "GRT"
 
 # Main Title & Description
-st.title("⚡ SH1N Swing Analysis Engine")
-st.caption("Simplified Trading Signals Driven by Multi-Layer Market Analysis")
+st.title("🎯 SH1N Spot Dip Catcher")
+st.caption("Spot Accumulation Engine: Catch Dips into Support & Sell into Resistance")
 
 # Fetch Markets
 all_markets = fetch_all_usdt_markets()
 
 # Sidebar Market Selection Inputs
-st.sidebar.header("Market Selection")
+st.sidebar.header("Spot Market Selection")
 search_query = st.sidebar.text_input(
     "Search Ticker / Pair:", 
     value=st.session_state.get('search_query_val', 'GRT')
@@ -585,7 +558,7 @@ timeframe = st.sidebar.selectbox(
     index=2
 )
 
-# Filter matching markets
+# Filter matching markets (prefix match)
 matching_markets = [
     m for m in all_markets 
     if m['base'].startswith(search_query) or m['symbol'].startswith(search_query)
@@ -599,12 +572,11 @@ if matching_markets:
     pending_market = next(m for m in matching_markets if m['label'] == selected_label)
 
     # Manual Trigger Button to run analysis
-    analyze_click = st.sidebar.button("🚀 Analyze Market", type="primary", use_container_width=True)
+    analyze_click = st.sidebar.button("🚀 Analyze Dip Setup", type="primary", use_container_width=True)
 
     # Initial boot default
     if 'active_market' not in st.session_state:
         st.session_state['active_market'] = pending_market
-        # Store in recent on initial boot
         st.session_state['recent_markets'] = [pending_market]
 
     # Trigger analysis ONLY on explicit button click
@@ -622,7 +594,7 @@ if matching_markets:
     st.markdown(
         f"""
         <div class="selected-market-banner">
-            <span style="color: #94a3b8; font-size: 0.82rem; font-weight: 600; text-transform: uppercase;">Currently Analyzing</span><br/>
+            <span style="color: #94a3b8; font-size: 0.82rem; font-weight: 600; text-transform: uppercase;">Currently Analyzing (Spot)</span><br/>
             <span style="font-size: 1.15rem; font-weight: 700; color: #f8fafc;">📍 {active_market['label']}</span>
         </div>
         """,
@@ -653,16 +625,15 @@ if matching_markets:
 
     # --- Fetch Data & Process Analysis ---
     symbol = active_market['symbol']
-    with st.spinner(f"Evaluating market probability for {symbol}..."):
+    with st.spinner(f"Scanning spot dip setup for {symbol}..."):
         df = fetch_ohlcv_data(symbol, timeframe=timeframe)
-        derivatives = fetch_derivatives_data(symbol)
         fng = fetch_fear_and_greed()
 
     if not df.empty and len(df) >= 30:
         df = calculate_technical_indicators(df)
         fibs, swing_high, swing_low = calculate_fibonacci_levels(df, lookback=DEFAULT_FIB_LOOKBACK)
-        score, score_breakdown = evaluate_confluence(df, fibs, derivatives, fng)
-        trade_plan = generate_plain_english_trade_plan(df, fibs, score)
+        score, score_breakdown = evaluate_dip_confluence(df, fibs, fng)
+        dip_plan = generate_spot_dip_plan(df, fibs, score)
 
         latest_price = df['close'].iloc[-1]
         prev_price = df['close'].iloc[-2]
@@ -673,70 +644,118 @@ if matching_markets:
         with row1_col1:
             st.metric("Current Price", format_price(latest_price), f"{price_change_pct:+.2f}%")
         with row1_col2:
-            st.metric("Market Action", trade_plan['action'])
+            st.metric("Spot Action", dip_plan['action'])
 
         row2_col1, row2_col2 = st.columns(2)
         with row2_col1:
-            st.metric("Est. Win Rate", trade_plan['probability'])
+            st.metric("Setup Read", dip_plan['confidence'])
         with row2_col2:
             st.metric(
-                "Setup Strength Score", 
+                "Dip Setup Score", 
                 f"{score} / 100", 
-                help="Scores above +25 suggest strong buying setups. Scores below -25 suggest selling setups."
+                help="Higher scores (60+) mean stronger dip alignment near support with cooling momentum. Below 40 means wait for a better dip."
             )
 
         st.divider()
 
-        # --- SIMPLE EXECUTION SUMMARY CARD ---
-        st.subheader("🎯 Execution Summary")
+        # --- SPOT DIP & RESISTANCE EXECUTION SUMMARY CARD ---
+        st.subheader("🎯 Spot Dip & Sell Plan")
         
-        if "BUY" in trade_plan['action']:
-            st.success("🟢 **BULLISH SETUP DETECTED**")
-        elif "SELL" in trade_plan['action']:
-            st.error("🔴 **BEARISH SETUP DETECTED**")
+        if "BUY DIP" in dip_plan['action']:
+            st.success("🟢 **PRIME SPOT DIP SETUP**")
+        elif "SCALE" in dip_plan['action']:
+            st.warning("🟡 **MODERATE PULLBACK / SCALE-IN ZONE**")
         else:
-            st.warning("⏸️ **NEUTRAL MARKET / STAND BY**")
+            st.info("⏸️ **WAIT FOR DEEPER DIP**")
         
-        # Bordered Execution Box
         with st.container():
             p_col1, p_col2 = st.columns(2)
-            p_col1.metric("1. Entry Zone", trade_plan['entry_range'])
-            p_col2.metric("2. Hard Stop Loss", format_price(trade_plan['sl']), f"-{trade_plan['risk_pct']:.2f}%")
+            p_col1.metric("1. Dip Buy Zone", dip_plan['entry_range'], f"~{dip_plan['dip_depth_pct']:.2f}% lower bound")
+            p_col2.metric("2. Invalidation Level", format_price(dip_plan['sl']), f"-{dip_plan['sl_pct']:.2f}%")
             
             p_col3, p_col4 = st.columns(2)
-            p_col3.metric("3. Take Profit 1", format_price(trade_plan['tp1']), f"+{trade_plan['tp1_pct']:.2f}%")
-            p_col4.metric("4. Take Profit 2", format_price(trade_plan['tp2']), f"+{trade_plan['tp2_pct']:.2f}%")
+            p_col3.metric("3. Resistance Sell TP1", format_price(dip_plan['tp1']), f"+{dip_plan['tp1_pct']:.2f}%")
+            p_col4.metric("4. Resistance Sell TP2", format_price(dip_plan['tp2']), f"+{dip_plan['tp2_pct']:.2f}%")
 
         st.divider()
 
         # --- DETAILED TABBED VIEWS ---
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "🎯 Strategy", 
-            "📊 Setup Analysis", 
-            "📈 Technicals", 
-            "⚡ Derivatives", 
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "🎯 Dip Strategy", 
+            "📊 Score Breakdown", 
+            "📈 Support & Resistance", 
             "📋 Raw Data"
         ])
 
         with tab1:
-            st.subheader("💡 Why is this recommended?")
-            for item in trade_plan['rationale']:
+            st.subheader("💡 Why this Spot Plan?")
+            for item in dip_plan['rationale']:
                 st.markdown(f"- {item}")
                 
             st.info(
-                "🛡 **Wick Protection Rule:** "
-                "Avoid panicking on temporary price spikes. "
-                f"Only close your trade if a **{timeframe.upper()} candle closes beyond {format_price(trade_plan['sl'])}**."
+                "🛡 **Spot Patience Rule:** "
+                "Spot trading works best when you buy pullbacks into support and sell into resistance—not green spikes. "
+                f"Only consider invalidation if a **{timeframe.upper()} candle closes below {format_price(dip_plan['sl'])}**."
+            )
+
+            st.divider()
+            st.subheader("🧮 Spot Position & Target Calculator")
+            st.caption("Estimate token quantity and net spot gain at TP1 / TP2 after round-trip trading fees.")
+
+            calc_c1, calc_c2 = st.columns(2)
+            with calc_c1:
+                alloc_usdt = st.number_input(
+                    "Allocation (USDT)",
+                    min_value=1.0,
+                    value=100.0,
+                    step=10.0,
+                    key="spot_alloc_usdt"
+                )
+            with calc_c2:
+                fee_pct = st.number_input(
+                    "Round-Trip Fee (%)",
+                    min_value=0.0,
+                    max_value=5.0,
+                    value=0.20,
+                    step=0.02,
+                    key="spot_round_trip_fee",
+                    help="Combined buy + sell spot fee percentage (e.g., 0.20% = 0.10% maker/taker each side)."
+                )
+
+            ref_entry = dip_plan['entry_max'] if dip_plan['entry_max'] > 0 else latest_price
+            est_qty = alloc_usdt / ref_entry if ref_entry > 0 else 0.0
+            fee_drag_usdt = alloc_usdt * (fee_pct / 100.0)
+
+            tp1_gross_pct = ((dip_plan['tp1'] - ref_entry) / ref_entry) * 100.0 if ref_entry > 0 else 0.0
+            tp2_gross_pct = ((dip_plan['tp2'] - ref_entry) / ref_entry) * 100.0 if ref_entry > 0 else 0.0
+            sl_gross_pct = ((dip_plan['sl'] - ref_entry) / ref_entry) * 100.0 if ref_entry > 0 else 0.0
+
+            tp1_net_usdt = (est_qty * (dip_plan['tp1'] - ref_entry)) - fee_drag_usdt
+            tp2_net_usdt = (est_qty * (dip_plan['tp2'] - ref_entry)) - fee_drag_usdt
+            sl_net_usdt = (est_qty * (dip_plan['sl'] - ref_entry)) - fee_drag_usdt
+
+            tp1_net_pct = (tp1_net_usdt / alloc_usdt) * 100.0 if alloc_usdt > 0 else 0.0
+            tp2_net_pct = (tp2_net_usdt / alloc_usdt) * 100.0 if alloc_usdt > 0 else 0.0
+            sl_net_pct = (sl_net_usdt / alloc_usdt) * 100.0 if alloc_usdt > 0 else 0.0
+
+            m_c1, m_c2, m_c3 = st.columns(3)
+            m_c1.metric(f"Est. {active_market['base']} Qty", f"{est_qty:,.4f}", f"@ {format_price(ref_entry)}")
+            m_c2.metric("Net Profit @ TP1", f"{tp1_net_usdt:+,.2f} USDT", f"{tp1_net_pct:+.2f}% net ({tp1_gross_pct:+.2f}% gross)")
+            m_c3.metric("Net Profit @ TP2", f"{tp2_net_usdt:+,.2f} USDT", f"{tp2_net_pct:+.2f}% net ({tp2_gross_pct:+.2f}% gross)")
+
+            st.caption(
+                f"Est. Invalidation impact @ {format_price(dip_plan['sl'])}: "
+                f"**{sl_net_usdt:+,.2f} USDT** ({sl_net_pct:+.2f}% net / {sl_gross_pct:+.2f}% gross) · "
+                f"Est. round-trip fee drag: **{fee_drag_usdt:.2f} USDT**."
             )
 
         with tab2:
-            st.subheader("6-Layer Setup Strength Breakdown")
+            st.subheader("5-Layer Spot Dip Score Breakdown")
             st.caption(
-                "**What is Setup Strength?** Instead of relying on a single indicator, "
-                "we analyze 6 separate market layers (Trend, Momentum, Volume, Directional S/R Confluence, "
-                "Derivatives, and Sentiment). The higher the score out of 100, the more indicators agree on the move."
+                "Scores **0 to 100** based on Trend Health, Dip Momentum (RSI/MACD), Volume/OBV absorption, "
+                "Fibonacci + Williams Fractal support confluence, and Market Fear."
             )
-            st.progress(max(0, min(100, int((score + 100) / 2))))
+            st.progress(max(0, min(100, score)))
             
             for category, data in score_breakdown.items():
                 c1, c2, c3 = st.columns([2, 1, 3])
@@ -748,44 +767,54 @@ if matching_markets:
             col_a, col_b = st.columns(2)
             
             with col_a:
-                st.subheader("Fibonacci Retracements")
+                st.subheader("Fibonacci Levels")
                 fib_df = pd.DataFrame(list(fibs.items()), columns=['Fib Level', 'Price Level'])
-                fib_df['Distance'] = fib_df['Price Level'].apply(lambda x: f"{((latest_price - x)/x)*100:+.2f}%")
+                fib_df['Distance'] = fib_df['Price Level'].apply(lambda x: f"{((latest_price - x)/x)*100:+.2f}%" if x else "0.00%")
                 fib_df['Price Level'] = fib_df['Price Level'].apply(format_price)
                 st.table(fib_df)
 
             with col_b:
-                st.subheader("Historical Pivot S/R")
+                st.subheader("Fractal S/R Candidates")
                 recent_res, recent_sup = fetch_recent_pivots(df)
                 
                 pivot_data = []
                 if recent_res:
                     for res in reversed(recent_res):
-                        pivot_data.append({"Type": "Resistance 🔴", "Level": format_price(res)})
+                        pct_move = ((res - latest_price) / latest_price) * 100
+                        pivot_data.append({
+                            "Candidate": f"Resistance ({pct_move:+.1f}%)",
+                            "Level": format_price(res)
+                        })
                 if recent_sup:
                     for sup in reversed(recent_sup):
-                        pivot_data.append({"Type": "Support 🟢", "Level": format_price(sup)})
+                        pct_move = ((sup - latest_price) / latest_price) * 100
+                        pivot_data.append({
+                            "Candidate": f"Support ({pct_move:+.1f}%)",
+                            "Level": format_price(sup)
+                        })
                 
                 if pivot_data:
                     st.table(pd.DataFrame(pivot_data))
                 else:
                     st.info("No fractal pivots detected in recent candles.")
 
-        with tab4:
-            st.subheader("Derivatives & Market Sentiment")
-            d1, d2 = st.columns(2)
-            with d1:
-                st.markdown("##### Bitget Futures Data")
-                st.write(f"**Market Type:** {active_market['type']}")
-                st.write(f"**Funding Rate:** `{derivatives['funding_rate_pct']:.4f}%`")
-                st.write(f"**Open Interest:** `{derivatives['open_interest']:,.2f}`")
-            
-            with d2:
-                st.markdown("##### Global Sentiment")
-                st.write(f"**Fear & Greed Index:** `{fng['value']}`")
-                st.write(f"**Market State:** `{fng['classification']}`")
+            st.subheader("Key Indicators")
+            latest = df.iloc[-1]
+            tech_data = {
+                "Metric": ["EMA 20", "EMA 50", "EMA 200", "RSI (14)", "MACD Hist", "20-SMA Vol", "Fear & Greed"],
+                "Value": [
+                    format_price(latest['ema_20']),
+                    format_price(latest['ema_50']),
+                    format_price(latest['ema_200']) if len(df) >= 200 else "N/A (<200 bars)",
+                    f"{latest['rsi']:.2f}",
+                    format_decimal(latest['macd_hist']),
+                    f"{latest['vol_sma_20']:,.2f}",
+                    f"{fng['value']} ({fng['classification']})"
+                ]
+            }
+            st.table(pd.DataFrame(tech_data))
 
-        with tab5:
+        with tab4:
             st.subheader("Recent Market Data")
             st.dataframe(
                 df[['timestamp', 'open', 'high', 'low', 'close', 'volume', 'rsi', 'ema_20', 'ema_50']].tail(20), 
@@ -793,6 +822,6 @@ if matching_markets:
             )
 
     else:
-        st.warning("Insufficient historical data returned for this asset/timeframe combination.")
+        st.warning("Insufficient historical data returned for this spot asset/timeframe combination.")
 else:
-    st.warning(f"No active USDT Spot or Perpetual pairs found starting with '{search_query}'.")
+    st.warning(f"No active Spot USDT pairs found starting with '{search_query}'.")
