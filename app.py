@@ -8,7 +8,7 @@ import json
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(
-    page_title="SH1N Spot Dip Catcher v4",
+    page_title="SH1N Spot Dip Catcher v5",
     page_icon="🎯",
     layout="centered",
     initial_sidebar_state="expanded"
@@ -202,7 +202,7 @@ def fetch_spot_tickers_snapshot():
     except Exception:
         return {}
 
-@st.cache_data(ttl=90, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def fetch_ohlcv_data(symbol, timeframe='15m', limit=260):
     """Fetch closed candlestick OHLCV data (excludes live unclosed candle)."""
     try:
@@ -665,34 +665,12 @@ def run_market_dip_scanner(max_coins=25, min_quote_vol=500_000.0, max_spread_pct
 
 
 # --- 5. User Interface & State Initialization ---
-POSITIONS_FILE = "sh1n_spot_open_positions.json"
-
-def load_saved_positions():
-    try:
-        with open(POSITIONS_FILE, "r", encoding="utf-8") as file:
-            data = json.load(file)
-        return data if isinstance(data, list) else []
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return []
-
-def save_positions(positions):
-    try:
-        with open(POSITIONS_FILE, "w", encoding="utf-8") as file:
-            json.dump(positions, file, indent=2)
-        return True
-    except OSError:
-        return False
-
 if 'recent_markets' not in st.session_state:
     st.session_state['recent_markets'] = []
 if 'search_query_val' not in st.session_state:
     st.session_state['search_query_val'] = "SOL"
-if 'signal_log' not in st.session_state:
-    st.session_state['signal_log'] = []
-if 'open_positions' not in st.session_state:
-    st.session_state['open_positions'] = load_saved_positions()
 
-st.title("🎯 SH1N Spot Dip Catcher v4")
+st.title("🎯 SH1N Spot Dip Catcher v5")
 st.caption("15m Spot Setups · 1H/4H Trend Context · Scalp-to-Swing · Bitget USDT Spot")
 st.caption("Scores rank setup confluence; they are not win probabilities. Always verify spread, fees, and order-book conditions before entry.")
 
@@ -725,15 +703,15 @@ alloc_usdt = st.sidebar.number_input(
     "Planned Allocation (USDT)",
     min_value=1.0,
     value=100.0,
-    step=1.0,
+    step=10.0,
     key="spot_alloc_usdt"
 )
 
 account_equity_usdt = st.sidebar.number_input(
     "Total Spot Account Equity (USDT)",
     min_value=1.0,
-    value=4000.0,
-    step=1.0,
+    value=500.0,
+    step=25.0,
     help="Used only to calculate the risk budget. Enter your actual available spot account value."
 )
 
@@ -822,24 +800,6 @@ if matching_markets:
         fibs, _, _ = calculate_fibonacci_levels(m15_df, lookback=DEFAULT_FIB_LOOKBACK)
         res = evaluate_intraday_dip_setup(m15_df, h1_df, h4_df, btc_df, fibs, fee_side_pct, m5_df=m5_df)
 
-        # Deduplicate signals per symbol + completed 15m candle timestamp
-        candle_key = f"{symbol}|{m15_df['timestamp'].iloc[-1].isoformat()}"
-        if res["state"] in ("Confirmed", "Watch"):
-            existing_keys = {entry["dedup_key"] for entry in st.session_state['signal_log']}
-            if candle_key not in existing_keys:
-                st.session_state['signal_log'].insert(0, {
-                    "dedup_key": candle_key,
-                    "time": m15_df['timestamp'].iloc[-1].strftime('%Y-%m-%d %H:%M UTC'),
-                    "pair": symbol,
-                    "state": res["state"],
-                    "score": res["score"],
-                    "entry": res["price"],
-                    "tp1": res["tp1"],
-                    "stop": res["stop"],
-                    "rr": round(res["net_r_multiple"], 2),
-                })
-                st.session_state['signal_log'] = st.session_state['signal_log'][:25]
-
         latest_price = res['price']
         prev_price = float(m15_df['close'].iloc[-2])
         price_change_pct = ((latest_price - prev_price) / prev_price) * 100
@@ -885,11 +845,10 @@ if matching_markets:
         st.divider()
 
         # --- TABS ---
-        tab1, tab2, tab3, tab4 = st.tabs([
+        tab1, tab2, tab3 = st.tabs([
             "🔍 Market Scanner",
             "🧮 Position & Sizing",
-            "📊 Layers & S/R",
-            "📌 Open & Log"
+            "📊 Layers & S/R"
         ])
 
         with tab1:
@@ -967,20 +926,88 @@ if matching_markets:
                 f"Fear & Greed (context): **{fng['value'] if fng['value'] is not None else 'N/A'} ({fng['classification']})**."
             )
 
-            if st.button("➕ Track Current Setup as Open Position", use_container_width=True):
-                if not any(p.get("pair") == symbol for p in st.session_state['open_positions']):
-                    st.session_state['open_positions'].append({
-                        "pair": symbol,
-                        "entry": latest_price,
-                        "stop": res['stop'],
-                        "tp1": res['tp1'],
-                        "tp2": res['tp2'],
-                        "qty": est_qty,
-                    })
-                    save_positions(st.session_state['open_positions'])
-                    st.success(f"Added {symbol} to Open Positions tracker.")
+            st.divider()
+            st.subheader("💰 Spot Profit Calculator")
+            st.caption("Estimate your net result for a buy-and-sell trade. Trading fees are applied separately on both sides.")
+
+            calc_c1, calc_c2 = st.columns(2)
+            with calc_c1:
+                calc_buy_price = st.number_input(
+                    "Buy Price (USDT)",
+                    min_value=0.0,
+                    value=0.0,
+                    step=0.0001,
+                    format="%.8f",
+                    key="profit_calc_buy_price",
+                )
+            with calc_c2:
+                calc_sell_price = st.number_input(
+                    "Sell Price (USDT)",
+                    min_value=0.0,
+                    value=0.0,
+                    step=0.0001,
+                    format="%.8f",
+                    key="profit_calc_sell_price",
+                )
+
+            calc_c3, calc_c4 = st.columns(2)
+            with calc_c3:
+                calc_buy_amount = st.number_input(
+                    "Buying Amount (USDT)",
+                    min_value=0.0,
+                    value=100.0,
+                    step=10.0,
+                    format="%.2f",
+                    key="profit_calc_buy_amount",
+                )
+            with calc_c4:
+                calc_include_fee = st.checkbox(
+                    "Include trading fee",
+                    value=True,
+                    key="profit_calc_include_fee",
+                )
+                calc_fee_pct = st.number_input(
+                    "Fee per side (%)",
+                    min_value=0.0,
+                    max_value=5.0,
+                    value=0.1,
+                    step=0.01,
+                    format="%.2f",
+                    disabled=not calc_include_fee,
+                    key="profit_calc_fee_pct",
+                )
+
+            calc_fee = (calc_fee_pct / 100.0) if calc_include_fee else 0.0
+            if calc_buy_price > 0 and calc_sell_price > 0 and calc_buy_amount > 0:
+                calc_qty = calc_buy_amount / calc_buy_price
+                calc_buy_fee = calc_buy_amount * calc_fee
+                calc_total_cost = calc_buy_amount + calc_buy_fee
+                calc_gross_sell = calc_qty * calc_sell_price
+                calc_sell_fee = calc_gross_sell * calc_fee
+                calc_net_sell = calc_gross_sell - calc_sell_fee
+                calc_net_pnl = calc_net_sell - calc_total_cost
+                calc_roi = (calc_net_pnl / calc_total_cost * 100.0) if calc_total_cost > 0 else 0.0
+                calc_break_even = calc_buy_price * (1.0 + calc_fee) / (1.0 - calc_fee) if calc_fee < 1.0 else 0.0
+
+                r1, r2, r3 = st.columns(3)
+                r1.metric("Estimated Quantity", f"{calc_qty:,.6f}")
+                r2.metric("Net P/L", f"{calc_net_pnl:+,.4f} USDT", f"{calc_roi:+.2f}% net ROI")
+                r3.metric("Break-even Sell Price", format_price(calc_break_even))
+
+                st.caption(
+                    f"Total buy cost: **{calc_total_cost:,.4f} USDT** "
+                    f"(buy fee: {calc_buy_fee:,.4f}) · "
+                    f"Net sell proceeds: **{calc_net_sell:,.4f} USDT** "
+                    f"(sell fee: {calc_sell_fee:,.4f})."
+                )
+                if calc_net_pnl > 0:
+                    st.success("This price scenario results in an estimated net profit after fees.")
+                elif calc_net_pnl < 0:
+                    st.warning("This price scenario results in an estimated net loss after fees.")
                 else:
-                    st.warning(f"{symbol} is already in your Open Positions tracker.")
+                    st.info("This price scenario is approximately break-even after fees.")
+            else:
+                st.info("Enter a buy price, sell price, and buying amount above zero to calculate the result.")
 
         with tab3:
             st.subheader("Three-Layer Score Breakdown")
@@ -1005,56 +1032,6 @@ if matching_markets:
                     st.table(pd.DataFrame([{"Resistance": format_price(r)} for r in res['resistances']]))
                 else:
                     st.info("No confirmed resistance above price.")
-
-        with tab4:
-            st.subheader("Open Spot Positions (Separate Monitor)")
-            if st.session_state['open_positions']:
-                pos_rows = []
-                position_tickers = fetch_spot_tickers_snapshot()
-                for idx, pos in enumerate(st.session_state['open_positions']):
-                    ticker = position_tickers.get(pos["pair"], {}) if position_tickers else {}
-                    cur_p = ticker.get("last") or ticker.get("close")
-                    if cur_p is not None and float(cur_p) > 0:
-                        cur_p = float(cur_p)
-                        unrealized = (pos["qty"] * cur_p * (1.0 - fee)) - (pos["qty"] * pos["entry"] * (1.0 + fee))
-                        pnl_text = f"{unrealized:+.2f} USDT"
-                    else:
-                        cur_p = None
-                        pnl_text = "Ticker unavailable"
-                    pos_rows.append({
-                        "Pair": pos["pair"],
-                        "Entry": format_price(pos["entry"]),
-                        "Current": format_price(cur_p) if cur_p else "N/A",
-                        "Stop": format_price(pos["stop"]),
-                        "TP1": format_price(pos["tp1"]),
-                        "Est. Net P/L": pnl_text,
-                    })
-                st.dataframe(pd.DataFrame(pos_rows), use_container_width=True, hide_index=True)
-                if st.button("Clear Tracked Positions"):
-                    st.session_state['open_positions'] = []
-                    save_positions([])
-                    st.rerun()
-            else:
-                st.info("No open positions tracked yet. Add a setup from the **Position & Sizing** tab.")
-
-            st.divider()
-            st.subheader("Deduplicated Signal Log (Per 15m Candle)")
-            if st.session_state['signal_log']:
-                log_disp = pd.DataFrame([
-                    {
-                        "Time (UTC)": item["time"],
-                        "Pair": item["pair"],
-                        "State": item["state"],
-                        "Score": f"{item['score']}/100",
-                        "Entry": format_price(item["entry"]),
-                        "TP1": format_price(item["tp1"]),
-                        "Net R:R": f"{item['rr']:.2f}R",
-                    }
-                    for item in st.session_state['signal_log']
-                ])
-                st.dataframe(log_disp, use_container_width=True, hide_index=True)
-            else:
-                st.info("Confirmed and Watch setups will log here once per completed 15m bar.")
 
     else:
         st.warning(f"Insufficient closed candles across 15m/1H/4H (need at least {MIN_BARS} bars for 200 EMA).")
